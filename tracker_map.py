@@ -10,7 +10,7 @@ Pipeline: raw -> build_state(raw, prev_state) -> state -> render(state)
 
 STATE v5 CANONICAL CONTRACT:
   meta:        timestamp, device_id, version
-  location:    lat, lng, place, since_sec, distance_to_home_m
+  location:    lat, lng, label_primary, since_sec, distance_to_home_m
   movement:    speed_kmh (0 if STATIC), mode, confidence
   activity:    score, level, screen_state
   network:     type, signal_quality
@@ -22,13 +22,14 @@ STATE v5 CANONICAL CONTRACT:
 
 Rules:
   - SINGLE SOURCE OF TRUTH = STATE OBJECT
-  - frontend = render(state) ONLY
+  - ONE PLACE RULE: label_primary is the ONLY place field rendered in UI
+  - UI PRIORITY STACK: Location > Movement > Activity > Network/GPS
+  - frontend = render(state) ONLY (ZERO logic, ZERO calculations)
   - backend = inferencia + scoring + eventos
-  - cero logica distribuida
-  - cero calculos en JS
   - NO ghost speed (variance < 0.15 → speed=0)
-  - NO duplicate labels
+  - NO duplicate labels (DEDUPE: skip if same as last render)
   - NO double percent %%
+  - NO N/A in UI
 """
 
 import csv
@@ -904,7 +905,7 @@ def build_state(raw, prev_state=None):
         "location": {
             "lat": lat,
             "lng": lng,
-            "place": place,
+            "label_primary": place,
             "since_sec": since_sec,
             "distance_to_home_m": distance_to_home_m,
         },
@@ -1218,8 +1219,8 @@ def tracking_loop(stop_event):
                     stats = compute_stats(points)
                     generate_html(points, stats, battery_info)
                     logger.info(
-                        "Punto | place=%s mode=%s score=%d spoof=%s since=%ds",
-                        _PREV_STATE["location"]["place"],
+                        "Punto | label_primary=%s mode=%s score=%d spoof=%s since=%ds",
+                        _PREV_STATE["location"]["label_primary"],
                         _PREV_STATE["movement"]["mode"],
                         _PREV_STATE["activity"]["score"],
                         _PREV_STATE["spoof"]["label"],
@@ -1312,33 +1313,33 @@ body{background:#000;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Displa
 .card::-webkit-scrollbar{width:0;display:none}
 @media(min-width:700px){.card{left:50%;right:auto;transform:translateX(-50%);width:420px;max-width:90vw}}
 
-/* Place + since */
-.place-row{display:flex;align-items:baseline;gap:6px;margin-bottom:4px}
-.place{font-size:16px;font-weight:700;color:#fff;letter-spacing:-.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.since{font-size:12px;color:#636363;white-space:nowrap;flex-shrink:0}
+/* ===== UI PRIORITY STACK ===== */
+/* 1. LOCATION — sole big label (ONE PLACE RULE) */
+.label-row{margin-bottom:2px}
+.label-primary{font-size:22px;font-weight:700;letter-spacing:-.5px;line-height:1.1;color:#fff}
+.label-primary.casa{color:#34c759}.label-primary.trabajo{color:#007aff}.label-primary.movimiento{color:#ff9500}.label-primary.inactivo{color:#8a8a8a}
 
-/* Time row */
-.time-row{font-size:11px;color:#636363;margin-bottom:8px}
+/* Since + Time */
+.since-row{display:flex;align-items:baseline;gap:6px;margin-bottom:6px}
+.since{font-size:12px;color:#636363;white-space:nowrap}
+.time-row{font-size:12px;color:#636363;white-space:nowrap}
 
-/* Status row */
-.status-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}
-.status{font-size:22px;font-weight:700;letter-spacing:-.5px;line-height:1}
-.status.casa{color:#34c759}.status.trabajo{color:#007aff}.status.movimiento{color:#ff9500}.status.inactivo{color:#8a8a8a}
-.speed{font-size:20px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums;line-height:1}
-.speed-unit{font-size:12px;color:#8a8a8a;font-weight:500;margin-left:2px}
-
-/* Mode badge */
-.mode-badge{display:inline-block;font-size:11px;font-weight:600;color:#fff;background:rgba(255,255,255,.08);padding:2px 8px;border-radius:6px;margin-left:8px;letter-spacing:.3px}
+/* 2. MOVEMENT — badge */
+.meta-row{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.mode-badge{display:inline-block;font-size:11px;font-weight:600;color:#fff;background:rgba(255,255,255,.08);padding:2px 8px;border-radius:6px;letter-spacing:.3px}
 .mode-badge.static{background:rgba(142,142,147,.15);color:#8e8e93}
 .mode-badge.walk{background:rgba(52,199,89,.15);color:#34c759}
 .mode-badge.car{background:rgba(0,122,255,.15);color:#007aff}
 .mode-badge.bus{background:rgba(255,149,0,.15);color:#ff9500}
+.meta-sep{color:#636363;font-size:11px}
 
-/* Level badge */
-.level-badge{display:inline-block;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;letter-spacing:.3px;margin-left:6px}
+/* 3. ACTIVITY — level badge + score */
+.level-badge{display:inline-block;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;letter-spacing:.3px}
 .level-badge.low{background:rgba(142,142,147,.15);color:#8e8e93}
 .level-badge.mid{background:rgba(255,149,0,.15);color:#ff9500}
 .level-badge.high{background:rgba(52,199,89,.15);color:#34c759}
+.speed-inline{font-size:13px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
+.speed-unit{font-size:10px;color:#8a8a8a;font-weight:500;margin-left:2px}
 
 /* Info rows */
 .info-row{display:flex;align-items:center;gap:8px;font-size:13px;color:#8a8a8a;margin-bottom:4px}
@@ -1406,27 +1407,29 @@ body{background:#000;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Displa
 <div id="signalOverlay"></div>
 
 <div class="card">
-  <div class="place-row">
-    <span class="place" id="place">---</span>
+  <!-- 1. LOCATION — ONE PLACE RULE: label_primary is the SOLE place rendered -->
+  <div class="label-row">
+    <span class="label-primary" id="labelPrimary">---</span>
+  </div>
+  <div class="since-row">
     <span class="since" id="since"></span>
+    <span class="time-row" id="timeRow"></span>
   </div>
-  <div class="time-row" id="timeRow">---</div>
-  <div class="status-row">
-    <div>
-      <span class="status" id="status">---</span>
-      <span class="mode-badge static" id="modeBadge">STATIC</span>
-      <span class="level-badge low" id="levelBadge">LOW</span>
-    </div>
-    <div class="speed" id="speedRow" style="display:none"></div>
+  <!-- 2. MOVEMENT + 3. ACTIVITY — meta row -->
+  <div class="meta-row">
+    <span class="mode-badge static" id="modeBadge">STATIC</span>
+    <span class="meta-sep">·</span>
+    <span class="level-badge low" id="levelBadge">LOW</span>
+    <span class="speed-inline" id="speedInline" style="display:none"></span>
   </div>
-  <!-- Activity -->
+  <!-- Activity bar -->
   <div class="info-row" id="actRow">
     <span class="dot blue"></span>
     <span>Actividad</span>
     <span class="val" id="actVal">0</span>
     <div class="bar-wrap"><div class="bar-fill" id="actBar" style="width:0;background:#8a8a8a"></div></div>
   </div>
-  <!-- Network + Signal -->
+  <!-- 4. NETWORK + Signal -->
   <div class="info-row" id="netRow">
     <span class="dot purple" id="netDot"></span>
     <span>Red</span>
@@ -1440,11 +1443,11 @@ body{background:#000;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Displa
     <span class="val" id="battVal">---</span>
     <span class="screen-ind on" id="screenInd"></span>
   </div>
-  <!-- GPS / Spoof -->
-  <div class="info-row" id="spoofRow">
-    <span class="dot green" id="spoofDot"></span>
+  <!-- GPS / Signal quality -->
+  <div class="info-row" id="gpsRow">
+    <span class="dot green" id="gpsDot"></span>
     <span>GPS</span>
-    <span class="val" id="spoofVal">---</span>
+    <span class="val" id="gpsVal">---</span>
   </div>
   <!-- Proximity -->
   <div class="prox-row" id="proxRow" style="display:none">
@@ -1471,7 +1474,7 @@ body{background:#000;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Displa
   <div class="dbg-row"><span>version</span><span class="dbg-val" id="dbgVer">v5</span></div>
   <div class="dbg-row"><span>speed</span><span class="dbg-val" id="dbgSpeed">0</span></div>
   <div class="dbg-row"><span>mode</span><span class="dbg-val" id="dbgMode">---</span></div>
-  <div class="dbg-row"><span>zone</span><span class="dbg-val" id="dbgZone">---</span></div>
+  <div class="dbg-row"><span>label</span><span class="dbg-val" id="dbgLabel">---</span></div>
   <div class="dbg-row"><span>since</span><span class="dbg-val" id="dbgSince">0</span></div>
   <div class="dbg-row"><span>spoof</span><span class="dbg-val" id="dbgSpoof">OK</span></div>
   <div class="dbg-row"><span>signal</span><span class="dbg-val" id="dbgSignal">---</span></div>
@@ -1491,8 +1494,11 @@ var _lastGoodDataTime=Date.now();
 var _signalLost=false;
 var _alertStop=null;
 
+/* DEDUPE: cache last rendered values to skip redundant DOM updates */
+var _lastRender={label_primary:null,mode:null,level:null,signal_quality:null,network_type:null,battery:null,charging:null,screen_state:null,since_sec:null,score:null};
+
 var pts=data.filter(function(p){return p.lat!=null&&p.lng!=null&&isFinite(p.lat)&&isFinite(p.lng)});
-console.log('[Tracker v5]', pts.length, 'puntos');
+console.log('[Tracker v5] ONE PLACE RULE', pts.length, 'puntos');
 
 var initCenter=[-31.65,-60.71],initZoom=16;
 if(pts.length>0){var lp=pts[pts.length-1];if(isFinite(lp.lat)&&isFinite(lp.lng))initCenter=[lp.lat,lp.lng]}
@@ -1518,67 +1524,123 @@ if(pts.length>0){var last=pts[pts.length-1];updateLiveMarker(last.lat,last.lng,l
 window.__tracker={map:map,pts:pts,clusterGroup:clusterGroup,liveMarker:liveMarker,lastPointCount:pts.length};
 
 /* ================================================================
-   RENDER — STATE v5 ONLY (ZERO FRONTEND LOGIC)
+   RENDER v5 — ONE PLACE RULE + DEDUPE + UI PRIORITY STACK
+   ================================================================
+   RULES:
+     - SOLE source = state.location.label_primary (ONE PLACE RULE)
+     - PROHIBITED: rendering location.place, activity.status, zone.label
+     - DEDUPE: skip DOM update if value unchanged
+     - NO N/A, NO double %%, NO emojis
    ================================================================ */
-function _fmtSince(s){if(!s||s<=0)return'';var h=Math.floor(s/3600),m=Math.floor((s%3600)/60);if(h>0)return h+'h '+m+'m';return m+'m'}
+function _fmtSince(s){if(!s||s<=0)return'';var h=Math.floor(s/3600),m=Math.floor((s%3600)/60);if(h>0)return'Hace '+h+'h '+m+'m';return'Hace '+m+'m'}
 
 function render(state){
   if(!state)return;
   var L=state.location||{},M=state.movement||{},A=state.activity||{},N=state.network||{},D=state.device||{},S=state.spoof||{},P=state.proximity||{},G=state.ghostrail||{};
 
-  /* Place + since */
-  var pl=document.getElementById('place');if(pl)pl.textContent=L.place||'Sin ubicacion';
-  var si=document.getElementById('since');if(si){var stxt=_fmtSince(L.since_sec);si.textContent=stxt?'-- '+stxt:''}
-
-  /* Status (deduped: only show if different from place) */
-  var st=document.getElementById('status');
-  if(st){
-    var p=L.place||'';
-    var statusMap={'Casa':'CASA','Trabajo':'TRABAJO','En ruta':'MOVIMIENTO'};
-    var statusText=statusMap[p]||'INACTIVO';
-    st.textContent=statusText;
-    st.className='status '+(p==='Casa'?'casa':p==='Trabajo'?'trabajo':p==='En ruta'?'movimiento':'inactivo');
+  /* 1. LOCATION — ONE PLACE RULE: label_primary is the SOLE place */
+  var lp=L.label_primary||'Sin ubicacion';
+  if(lp!==_lastRender.label_primary){
+    var el=document.getElementById('labelPrimary');
+    if(el){
+      el.textContent=lp;
+      /* Color by semantic category */
+      var cls='label-primary '+(lp==='Casa'?'casa':lp==='Trabajo'?'trabajo':lp==='En ruta'?'movimiento':'inactivo');
+      el.className=cls;
+    }
+    _lastRender.label_primary=lp;
   }
 
-  /* Mode badge */
-  var mb=document.getElementById('modeBadge');
-  if(mb){mb.textContent=M.mode||'STATIC';mb.className='mode-badge '+(M.mode||'static').toLowerCase()}
+  /* Since */
+  var stxt=_fmtSince(L.since_sec);
+  if(L.since_sec!==_lastRender.since_sec){
+    var si=document.getElementById('since');if(si)si.textContent=stxt;
+    _lastRender.since_sec=L.since_sec;
+  }
 
-  /* Level badge */
-  var lb=document.getElementById('levelBadge');
-  if(lb){lb.textContent=A.level||'LOW';lb.className='level-badge '+(A.level||'low').toLowerCase()}
+  /* 2. MOVEMENT — badge */
+  if(M.mode!==_lastRender.mode){
+    var mb=document.getElementById('modeBadge');
+    if(mb){mb.textContent=M.mode||'STATIC';mb.className='mode-badge '+(M.mode||'static').toLowerCase()}
+    _lastRender.mode=M.mode;
+  }
 
-  /* Speed (HIDDEN if STATIC) */
-  var sr=document.getElementById('speedRow');
-  if(sr){if(M.mode!=='STATIC'&&M.speed_kmh>1){sr.style.display='block';sr.innerHTML=Math.round(M.speed_kmh)+'<span class="speed-unit">km/h</span>'}else{sr.style.display='none'}}
+  /* Speed inline (HIDDEN if STATIC) */
+  var spEl=document.getElementById('speedInline');
+  if(spEl){if(M.mode!=='STATIC'&&M.speed_kmh>1){spEl.style.display='inline';spEl.innerHTML=Math.round(M.speed_kmh)+'<span class="speed-unit">km/h</span>'}else{spEl.style.display='none'}}
 
-  /* Activity score */
-  var ar=document.getElementById('actRow');
-  if(ar){var sc=A.score||0;var av=document.getElementById('actVal');if(av)av.textContent=sc;var ab=document.getElementById('actBar');if(ab){ab.style.width=sc+'%';ab.style.background=sc>=66?'#34c759':sc>=26?'#ff9500':'#8a8a8a'}}
+  /* 3. ACTIVITY — level badge + score */
+  if(A.level!==_lastRender.level){
+    var lb=document.getElementById('levelBadge');
+    if(lb){lb.textContent=A.level||'LOW';lb.className='level-badge '+(A.level||'low').toLowerCase()}
+    _lastRender.level=A.level;
+  }
+  if(A.score!==_lastRender.score){
+    var sc=A.score||0;
+    var av=document.getElementById('actVal');if(av)av.textContent=sc;
+    var ab=document.getElementById('actBar');if(ab){ab.style.width=sc+'%';ab.style.background=sc>=66?'#34c759':sc>=26?'#ff9500':'#8a8a8a'}
+    _lastRender.score=sc;
+  }
 
-  /* Network + Signal quality */
-  var nr=document.getElementById('netRow');
-  if(nr){var nv=document.getElementById('netVal');if(nv)nv.textContent=N.type||'UNKNOWN';
-    var sq=document.getElementById('sqBadge');if(sq){var sqv=N.signal_quality||'NO_SIGNAL';sq.textContent=sqv.replace('_',' ').toUpperCase();sq.className='sq-badge '+sqv.toLowerCase()}
-    var nd=document.getElementById('netDot');if(nd){nd.className='dot '+(N.type==='WIFI'?'green':N.type==='4G'?'orange':N.type==='5G'?'blue':'gray')}}
+  /* 4. NETWORK + Signal quality */
+  if(N.type!==_lastRender.network_type){
+    var nv=document.getElementById('netVal');if(nv)nv.textContent=N.type||'DESCONOCIDA';
+    var nd=document.getElementById('netDot');if(nd){nd.className='dot '+(N.type==='WIFI'?'green':N.type==='4G'?'orange':N.type==='5G'?'blue':'gray')}
+    _lastRender.network_type=N.type;
+  }
+  if(N.signal_quality!==_lastRender.signal_quality){
+    var sq=document.getElementById('sqBadge');
+    if(sq){var sqv=N.signal_quality||'NO_SIGNAL';sq.textContent=sqv.replace(/_/g,' ');sq.className='sq-badge '+sqv.toLowerCase()}
+    _lastRender.signal_quality=N.signal_quality;
+  }
 
-  /* Battery + Screen */
-  var br=document.getElementById('battRow');
-  if(br){var bv=document.getElementById('battVal');if(bv){var bt=D.battery!=null?D.battery+'%':'---';if(D.charging)bt+=' (carga)';bv.textContent=bt}
-    var bd=document.getElementById('battDot');if(bd&&D.battery!=null){bd.className='dot '+(D.battery>50?'green':D.battery>20?'orange':'red')}
-    var sc2=document.getElementById('screenInd');if(sc2){sc2.className='screen-ind '+(A.screen_state==='ON'?'on':'off')}}
+  /* Battery + Screen — FIX double %% by stripping any stray % */
+  var battNum=D.battery!=null?parseInt(String(D.battery).replace(/%/g,''),10):null;
+  var battKey=''+battNum+'_'+D.charging;
+  if(battKey!==_lastRender.battery){
+    var bv=document.getElementById('battVal');
+    if(bv){
+      var bt=battNum!==null?battNum+'%':'---';
+      if(D.charging)bt+=' (carga)';
+      bv.textContent=bt;
+    }
+    var bd=document.getElementById('battDot');if(bd&&battNum!==null){bd.className='dot '+(battNum>50?'green':battNum>20?'orange':'red')}
+    _lastRender.battery=battKey;
+  }
 
-  /* Spoof — signal quality label instead of "OK" */
-  var spr=document.getElementById('spoofRow');
-  if(spr){var sv=document.getElementById('spoofVal');if(sv){sv.textContent=S.label==='OK'?N.signal_quality||'OK':S.label==='SUSPICIOUS'?'SOSPECHOSO':'ALTO RIESGO'}
-    var sd=document.getElementById('spoofDot');if(sd){sd.className='dot '+(S.label==='OK'?'green':S.risk>60?'red':'yellow')}
-    var so=document.getElementById('spoofOverlay');if(so){if(S.label==='HIGH_RISK')so.classList.add('active');else so.classList.remove('active')}}
+  /* Screen indicator */
+  if(A.screen_state!==_lastRender.screen_state){
+    var sc2=document.getElementById('screenInd');if(sc2){sc2.className='screen-ind '+(A.screen_state==='ON'?'on':'off')}
+    _lastRender.screen_state=A.screen_state;
+  }
+
+  /* GPS — show signal_quality (GOOD/WEAK/NO_SIGNAL), not generic "OK" */
+  var gpsEl=document.getElementById('gpsRow');
+  if(gpsEl){
+    var sv=document.getElementById('gpsVal');
+    if(sv){
+      if(S.label!=='OK'){
+        sv.textContent=S.label==='SUSPICIOUS'?'SOSPECHOSO':'ALTO RIESGO';
+      }else{
+        sv.textContent=N.signal_quality||'SIN SENAL';
+      }
+    }
+    var gd=document.getElementById('gpsDot');if(gd){gd.className='dot '+(S.label==='OK'?(N.signal_quality==='GOOD'?'green':N.signal_quality==='WEAK'?'yellow':'red'):(S.risk>60?'red':'yellow'))}
+    var so=document.getElementById('spoofOverlay');if(so){if(S.label==='HIGH_RISK')so.classList.add('active');else so.classList.remove('active')}
+  }
 
   /* Proximity */
   var pr=document.getElementById('proxRow');
-  if(pr&&P.distance_m!=null){pr.style.display='flex';var pv=document.getElementById('proxVal');if(pv){pv.textContent=P.arrival==='ARRIVED'?'CASI LLEGAS - '+P.distance_m+'m':P.arrival==='APPROACHING'?'LLEGANDO - '+P.distance_m+'m':P.distance_m+'m a Casa'}pr.className='prox-row '+(P.arrival==='APPROACHING'?'approaching':P.arrival==='ARRIVED'?'arrived':'')}
+  if(pr){
+    if(P.distance_m!=null){
+      pr.style.display='flex';
+      var pv=document.getElementById('proxVal');
+      if(pv){pv.textContent=P.arrival==='ARRIVED'?'CASI LLEGAS - '+P.distance_m+'m':P.arrival==='APPROACHING'?'LLEGANDO - '+P.distance_m+'m':P.distance_m+'m a Casa'}
+      pr.className='prox-row '+(P.arrival==='APPROACHING'?'approaching':P.arrival==='ARRIVED'?'arrived':'');
+    }else{pr.style.display='none'}
+  }
 
-  /* GhostRail (restored) */
+  /* GhostRail */
   var gr=document.getElementById('grRow');
   if(gr&&G.last_zones&&G.last_zones.length>0){gr.style.display='flex';var ghtml='';var zc={'Casa':'home','Trabajo':'work','En ruta':'transit'};G.last_zones.forEach(function(z){var cls=zc[z.name]||'other';var dur=z.min||0;var dt=dur>=60?Math.floor(dur/60)+'h '+Math.floor(dur%60)+'m':dur+'m';ghtml+='<span class="gr-item"><span class="gr-dot '+cls+'"></span>'+z.name+' <span class="gr-dur">'+dt+'</span></span>'});gr.innerHTML=ghtml}else if(gr){gr.style.display='none'}
 
@@ -1592,10 +1654,10 @@ function render(state){
   /* Toast for arrival / zone */
   if(state.events&&state.events.length>0){var latest=state.events[state.events.length-1];if(latest.type==='ARRIVAL'||latest.type==='ZONE'){_showToast(latest.msg)}if(latest.type==='ARRIVAL'){_playVoice(latest.msg)}}
 
-  /* Debug */
+  /* Debug panel */
   var h=function(id,val){var e=document.getElementById(id);if(e)e.textContent=val};
   h('dbgVer',state.meta&&state.meta.version||'v5');
-  h('dbgSpeed',M.speed_kmh);h('dbgMode',M.mode);h('dbgZone',L.place);h('dbgSince',L.since_sec);
+  h('dbgSpeed',M.speed_kmh);h('dbgMode',M.mode);h('dbgLabel',L.label_primary);h('dbgSince',L.since_sec);
   h('dbgSpoof',S.label+' ('+S.risk+')');h('dbgSignal',N.signal_quality);h('dbgScreen',A.screen_state);
   h('dbgProx',P.arrival+' '+P.distance_m+'m');h('dbgScore',A.score);
 }
