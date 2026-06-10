@@ -404,139 +404,48 @@ def compute_stats(points):
 
 
 # ════════════════════════════════════════════════════════════════
-# PIPELINE DE ESTADO — SOURCE OF TRUTH
+# STATE BUILDER — PIPELINE LIMPIO (SOURCE OF TRUTH)
 # ════════════════════════════════════════════════════════════════
-def compute_state(points, stats, is_home, is_working, battery=None, charging=None, address="", accuracy=None):
-    """Construye el STATE object normalizado. UI solo lee esto."""
-    last = points[-1] if points else {}
-    speed = stats.get("current_speed_kmh", 0) or 0
 
-    # Zone determination (backend only)
-    if is_home:
-        zone = "HOME"
-    elif is_working:
-        zone = "WORK"
-    elif speed > 3:
-        zone = "TRANSIT"
-    else:
-        zone = "UNKNOWN"
+def classify_zone(lat, lng, speed):
+    """Clasificador de zonas. Lógica simple y estable."""
+    if lat is None or lng is None:
+        return "UNKNOWN"
 
-    # Dwell time in current zone (seconds)
-    dwell_time_sec = 0
-    if points and len(points) >= 2:
-        for i in range(len(points) - 1, 0, -1):
-            p = points[i]
-            lat, lng = p.get("lat", 0), p.get("lng", 0)
-            if zone == "HOME" and not is_in_home_zone(lat, lng):
-                break
-            elif zone == "WORK" and not is_in_work_zone(lat, lng):
-                break
-            try:
-                tb = datetime.fromisoformat(points[i]["timestamp"])
-                ta = datetime.fromisoformat(points[i - 1]["timestamp"])
-                dwell_time_sec += (tb - ta).total_seconds()
-            except Exception:
-                pass
+    if is_in_home_zone(lat, lng):
+        return "HOME"
 
-    # GPS quality heuristic (0-1)
-    acc = accuracy or 50
-    gps_quality = max(0, min(1, 1 - (acc / 200)))
+    if is_in_work_zone(lat, lng):
+        return "WORK"
 
-    # Stability: ratio of non-stationary points
-    stability = 0.8
-    if points and len(points) > 5:
-        moving = sum(1 for p in points[-20:] if (p.get("speed_kmh") or 0) > 1)
-        stability = min(1, moving / min(20, len(points)))
+    if speed > 3:
+        return "TRANSIT"
 
-    # GhostRail: compute heat zones from 24h data
-    heat_zones = _compute_heat_zones(points)
-    distance_24h = stats.get("total_distance_km", 0) or 0
-
-    # Activity score for 24h
-    score_24h = _compute_ghostrail_score(points, stats)
-
-    # Connection type
-    signal = "GPS"
-    if acc and acc > 100:
-        signal = "NETWORK"
-    elif acc and acc > 50:
-        signal = "MIX"
-
-    # UI status label (backend-computed, frontend just displays)
-    if zone == "HOME":
-        ui_status = "EN CASA"
-    elif zone == "WORK":
-        ui_status = "TRABAJANDO"
-    elif zone == "TRANSIT":
-        ui_status = "EN MOVIMIENTO"
-    else:
-        ui_status = "INACTIVO"
-
-    state = {
-        "location": {
-            "lat": last.get("lat", 0),
-            "lng": last.get("lng", 0),
-            "address": address or "",
-            "accuracy": acc or 0,
-        },
-        "motion": {
-            "speed_kmh": round(speed, 1),
-            "velocity_smooth": round(speed, 1),
-            "is_moving": speed > 3,
-        },
-        "activity": {
-            "zone": zone,
-            "ui_status": ui_status,
-            "dwell_time_sec": int(dwell_time_sec),
-            "confidence_zone": round(gps_quality * 0.8 + 0.2, 2),
-        },
-        "device": {
-            "battery": battery,
-            "charging": charging or False,
-            "signal": signal,
-        },
-        "health": {
-            "gps_quality": round(gps_quality, 2),
-            "stability": round(stability, 2),
-        },
-        "ghostrail": {
-            "score_24h": score_24h,
-            "distance_24h_km": round(distance_24h, 2),
-            "heat_zones": heat_zones,
-        },
-    }
-
-    # Activity score: 0-100 real
-    state["activity_score"] = compute_activity_score(state)
-
-    return state
+    return "IDLE"
 
 
-def compute_activity_score(state):
-    """0-100 score basado en el STATE object. Sin ambigüedad."""
+def compute_activity_score(speed, zone, gps_quality, battery):
+    """0-100 score real. Reemplaza TODO lo que mezclaba estados."""
     score = 0
 
-    # Movement component (0-40)
-    speed = state["motion"]["speed_kmh"]
+    # movimiento real (0-45)
     if speed > 5:
-        score += 40
+        score += 45
     elif speed > 1:
         score += 20
 
-    # Zone component (0-50)
-    zone = state["activity"]["zone"]
+    # zona tiene peso fuerte (0-40)
     if zone == "WORK":
-        score += 50
+        score += 40
     elif zone == "TRANSIT":
         score += 30
     elif zone == "HOME":
-        score += 10
+        score += 25
 
-    # GPS quality (0-20)
-    score += state["health"]["gps_quality"] * 20
+    # calidad GPS (0-20)
+    score += gps_quality * 20
 
-    # Battery influence (0-10, minor)
-    battery = state["device"]["battery"]
+    # batería solo suaviza, no domina (0-10)
     if battery is not None:
         try:
             bp = int(str(battery).replace("%", ""))
@@ -544,74 +453,160 @@ def compute_activity_score(state):
         except (ValueError, TypeError):
             pass
 
-    return min(100, round(score))
+    return max(0, min(100, round(score)))
 
 
-def _compute_heat_zones(points):
-    """Top 3 zonas por dwell time. Para GhostRail."""
-    if not points or len(points) < 2:
-        return []
-
-    zones_data = {}
-    cur_zone = None
-    cur_start = None
-
-    for p in points:
-        lat, lng = p.get("lat", 0), p.get("lng", 0)
-        if is_in_home_zone(lat, lng):
-            zone = "Casa"
-        elif is_in_work_zone(lat, lng):
-            zone = "Trabajo"
-        else:
-            zone = "En tránsito"
-
-        if zone != cur_zone:
-            if cur_zone is not None and cur_start is not None:
-                try:
-                    end = datetime.fromisoformat(p["timestamp"])
-                    dur = (end - cur_start).total_seconds()
-                    zones_data[cur_zone] = zones_data.get(cur_zone, 0) + dur
-                except Exception:
-                    pass
-            cur_zone = zone
-            try:
-                cur_start = datetime.fromisoformat(p["timestamp"])
-            except Exception:
-                cur_start = None
-
-    # Close last segment
-    if cur_zone is not None and cur_start is not None and points:
-        try:
-            end = datetime.fromisoformat(points[-1]["timestamp"])
-            dur = (end - cur_start).total_seconds()
-            zones_data[cur_zone] = zones_data.get(cur_zone, 0) + dur
-        except Exception:
-            pass
-
-    # Sort by duration, top 3
-    sorted_zones = sorted(zones_data.items(), key=lambda x: x[1], reverse=True)[:3]
-    return [{"name": name, "duration_sec": int(dur)} for name, dur in sorted_zones]
-
-
-def _compute_ghostrail_score(points, stats):
-    """Activity score ponderado por distancia para 24h."""
-    if not points or len(points) < 2:
+def compute_dwell_time(zone, prev_state):
+    """Dwell time: segundos consecutivos en la misma zona."""
+    if not prev_state:
         return 0
 
-    total_s = stats.get("total_time_s", 0) or 0
-    moving_s = stats.get("moving_time_s", 0) or 0
-    dist_km = stats.get("total_distance_km", 0) or 0
-
-    if total_s == 0:
+    if prev_state["activity"]["zone"] != zone:
         return 0
 
-    # Base: moving time ratio (0-60 points)
-    time_score = min(60, (moving_s / total_s) * 60)
+    return prev_state["activity"]["dwell_time_sec"] + 1
 
-    # Distance bonus (0-40 points, max at 10km)
-    dist_score = min(40, (dist_km / 10) * 40)
 
-    return min(100, round(time_score + dist_score))
+def compute_stability(prev_state, speed):
+    """Stability: evita flickering entre estados."""
+    if not prev_state:
+        return 1.0
+
+    prev_speed = prev_state["motion"]["speed_kmh"]
+    diff = abs(speed - prev_speed)
+
+    return max(0, 1 - (diff / 10))
+
+
+def compute_ghostrail(prev_state, lat, lng, speed):
+    """GhostRail 24h: incremental, no recomputado desde cero."""
+    if not prev_state:
+        return {
+            "score_24h": 0,
+            "distance_24h_km": 0,
+            "heat_zones": []
+        }
+
+    prev = prev_state.get("ghostrail", {})
+
+    distance = prev.get("distance_24h_km", 0)
+    if speed > 0:
+        # Aproximación: km por segundo a la velocidad actual
+        distance += speed / 3600
+
+    zones = prev.get("heat_zones", [])
+
+    # Actualizar heat_zones con la zona actual
+    zone = classify_zone(lat, lng, speed)
+    zone_labels = {"HOME": "Casa", "WORK": "Trabajo", "TRANSIT": "En tránsito", "IDLE": "En tránsito", "UNKNOWN": "En tránsito"}
+    zone_label = zone_labels.get(zone, "En tránsito")
+
+    if zones and zones[0]["name"] == zone_label:
+        zones[0]["duration_sec"] += 1
+    else:
+        zones.insert(0, {"name": zone_label, "duration_sec": 1})
+        # Keep top 3
+        zones = zones[:3]
+
+    return {
+        "score_24h": min(100, round(distance * 2)),
+        "distance_24h_km": round(distance, 2),
+        "heat_zones": zones
+    }
+
+
+def build_state(raw, prev_state=None):
+    """
+    Convierte datos RPC + sensor lógico en STATE único limpio.
+    Este es el ÚNICO punto donde se construye estado.
+    UI solo lee lo que sale de aquí.
+    """
+    lat = raw.get("lat")
+    lng = raw.get("lng")
+    speed = float(raw.get("speed_kmh") or 0)
+    battery = raw.get("battery")
+    accuracy = float(raw.get("accuracy") or 0)
+    address = raw.get("address") or ""
+    charging = raw.get("charging") or False
+    timestamp = raw.get("timestamp")
+
+    # ── 1. MOTION LAYER ──
+    is_moving = speed > 3
+
+    velocity_smooth = speed if prev_state is None else (
+        speed * 0.6 + prev_state["motion"]["velocity_smooth"] * 0.4
+    )
+
+    # ── 2. ZONE CLASSIFICATION ──
+    zone = classify_zone(lat, lng, speed)
+    dwell_time = compute_dwell_time(zone, prev_state)
+
+    # ── 3. DEVICE STATE ──
+    acc = accuracy or 50
+    signal = "GPS"
+    if acc > 100:
+        signal = "NETWORK"
+    elif acc > 50:
+        signal = "MIX"
+
+    # ── 4. HEALTH SCORE ──
+    gps_quality = max(0, min(1, 1 - (accuracy / 100))) if accuracy else 0.5
+    stability = compute_stability(prev_state, speed)
+
+    # ── 5. GHOSTRAIL (24H METRIC CORE) ──
+    ghostrail = compute_ghostrail(prev_state, lat, lng, speed)
+
+    # ── 6. ACTIVITY SCORE (ÚNICO SCORE REAL) ──
+    activity_score = compute_activity_score(
+        speed=speed,
+        zone=zone,
+        gps_quality=gps_quality,
+        battery=battery
+    )
+
+    # ── 7. UI STATUS LABEL (backend-computed, frontend just displays) ──
+    ui_status_map = {
+        "HOME": "EN CASA",
+        "WORK": "TRABAJANDO",
+        "TRANSIT": "EN MOVIMIENTO",
+        "IDLE": "INACTIVO",
+        "UNKNOWN": "INACTIVO",
+    }
+    ui_status = ui_status_map.get(zone, "INACTIVO")
+
+    # ── 8. FINAL STATE OBJECT ──
+    state = {
+        "location": {
+            "lat": lat,
+            "lng": lng,
+            "address": address,
+            "accuracy": accuracy,
+        },
+        "motion": {
+            "speed_kmh": round(speed, 1),
+            "velocity_smooth": round(velocity_smooth, 1),
+            "is_moving": is_moving,
+        },
+        "activity": {
+            "zone": zone,
+            "ui_status": ui_status,
+            "dwell_time_sec": dwell_time,
+            "score": activity_score,
+        },
+        "device": {
+            "battery": battery,
+            "charging": charging,
+            "signal": signal,
+        },
+        "health": {
+            "gps_quality": round(gps_quality, 2),
+            "stability": round(stability, 2),
+            "last_update": timestamp,
+        },
+        "ghostrail": ghostrail,
+    }
+
+    return state
 
 
 def extract_battery_from_page(page, page_url=""):
@@ -1243,7 +1238,7 @@ def _check_quantum_jump(lat, lng, speed=None):
 
 def tracking_loop(stop_event):
     """Loop principal usando API directa (sin Playwright)."""
-    global _CURRENT_BATTERY, _CURRENT_ADDRESS, _LAST_POLL_TIME, _LAST_POLL_LAT, _LAST_POLL_LNG, _IS_WORKING, _IS_AT_HOME, _SPOOF_STATUS, _BATTERY_LIFE_ESTIMATE, _JUMP_NOTIFICATION, _CURRENT_CONNECTION, _CURRENT_CHARGING, _VEHICLE_TYPE, _VEHICLE_CONFIDENCE, _ANOMALY_FLAG, _ANOMALY_MSG, _TRIP_PURPOSE, _STATIONARY_PLACE, _LAST_UPDATE
+    global _CURRENT_BATTERY, _CURRENT_ADDRESS, _LAST_POLL_TIME, _LAST_POLL_LAT, _LAST_POLL_LNG, _IS_WORKING, _IS_AT_HOME, _SPOOF_STATUS, _BATTERY_LIFE_ESTIMATE, _JUMP_NOTIFICATION, _CURRENT_CONNECTION, _CURRENT_CHARGING, _VEHICLE_TYPE, _VEHICLE_CONFIDENCE, _ANOMALY_FLAG, _ANOMALY_MSG, _TRIP_PURPOSE, _STATIONARY_PLACE, _LAST_UPDATE, _PREV_STATE
     init_csv()
     battery_info = None
     logger.info("Inicio de captura via API. Presiona Ctrl+C para detener.")
@@ -1301,13 +1296,26 @@ def tracking_loop(stop_event):
                     _LAST_POLL_LNG = lng
                     _LAST_UPDATE = now
 
+                    # ── PIPELINE: raw → build_state → prev_state ──
+                    raw = {
+                        "lat": lat,
+                        "lng": lng,
+                        "speed_kmh": speed,
+                        "battery": battery_info,
+                        "accuracy": accuracy,
+                        "address": _CURRENT_ADDRESS,
+                        "charging": charging if charging else False,
+                        "timestamp": now.isoformat(),
+                    }
+                    _PREV_STATE = build_state(raw, _PREV_STATE)
+
                     append_csv(now, lat, lng, speed, hdg, state)
                     points = read_all_points()
                     stats = compute_stats(points)
                     spoof_icon = _detect_spoofing(bat, lat, lng, accuracy, charging)
                     _run_forensic_analysis(points)
                     generate_html(points, stats, battery_info, _IS_WORKING, spoof_icon, _BATTERY_LIFE_ESTIMATE, _JUMP_NOTIFICATION, _IS_AT_HOME, address=_CURRENT_ADDRESS)
-                    logger.info("Punto registrado")
+                    logger.info("Punto registrado | zona=%s score=%d", _PREV_STATE["activity"]["zone"], _PREV_STATE["activity"]["score"])
                 else:
                     _detect_spoofing(bat, lat, lng, accuracy, charging)
                     _update_battery_estimate(bat)
@@ -1616,16 +1624,24 @@ def generate_html(points, stats, battery=None, is_working=False, spoofing_icon="
     stats_json = json.dumps(stats)
     battery_json = json.dumps(battery) if battery else "null"
 
-    # Compute normalized STATE object
-    state = compute_state(
-        points, stats,
-        is_home=is_home,
-        is_working=is_working,
-        battery=battery,
-        charging=None,
-        address=address,
-        accuracy=None,
-    )
+    # Use _PREV_STATE if available (from build_state pipeline), else build from points
+    if _PREV_STATE is not None:
+        state = _PREV_STATE
+    else:
+        # Fallback: build state from current data (first load / no polls yet)
+        last = points[-1] if points else {}
+        speed = stats.get("current_speed_kmh", 0) or 0
+        raw = {
+            "lat": last.get("lat"),
+            "lng": last.get("lng"),
+            "speed_kmh": speed,
+            "battery": battery,
+            "accuracy": None,
+            "address": address,
+            "charging": None,
+            "timestamp": last.get("timestamp"),
+        }
+        state = build_state(raw, None)
     state_json = json.dumps(state)
 
     last_ts = ""
@@ -1857,7 +1873,7 @@ var INIT_IS_HOME = """ + ("true" if is_home else "false") + """;
 var INIT_IS_WORKING = """ + ("true" if is_working else "false") + """;
 var INIT_ADDRESS = """ + json.dumps(address if address else "") + """;
 var INIT_STATE = """ + state_json + """;
-var INIT_ACTIVITY_SCORE = """ + str(state["activity_score"]) + """;
+var INIT_ACTIVITY_SCORE = """ + str(state["activity"]["score"]) + """;
 var INIT_UI_STATUS = """ + json.dumps(state["activity"]["ui_status"]) + """;
 var INIT_ZONE = """ + json.dumps(state["activity"]["zone"]) + """;
 var INIT_HEAT_ZONES = """ + json.dumps(state["ghostrail"]["heat_zones"]) + """;
@@ -2333,7 +2349,7 @@ setInterval(async function(){
         /* ---- HUD update — reads STATE from /points ---- */
         var s=body.stats||{};
         var st=body.state||{};
-        var activityScore=body.activity_score||0;
+        var activityScore=(st&&st.activity&&st.activity.score)||0;
         var uiStatus=body.ui_status||'INACTIVO';
         var zone=body.zone||'UNKNOWN';
 
@@ -2581,6 +2597,8 @@ _STATIONARY_CACHE = {}  # {(lat,lng): nombre_lugar} para no repetir consultas
 _STATIONARY_MIN_S = 900  # 15 min minimo para considerar "estadía prolongada"
 # Timestamp del ultimo poll exitoso
 _LAST_UPDATE = ""
+# Pipeline state: prev_state para build_state (stateful pipeline)
+_PREV_STATE = None
 
 
 class TrackerHandler(SimpleHTTPRequestHandler):
@@ -2650,21 +2668,28 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                             _CURRENT_CONNECTION,
                             _LAST_UPDATE.isoformat() if _LAST_UPDATE else None)
                 # Pipeline de estado normalizado (source of truth)
-                state = compute_state(
-                    pts, sts,
-                    is_home=_IS_AT_HOME,
-                    is_working=_IS_WORKING,
-                    battery=_CURRENT_BATTERY,
-                    charging=_CURRENT_CHARGING if _CURRENT_CHARGING else None,
-                    address=_CURRENT_ADDRESS or "",
-                    accuracy=None,
-                )
+                if _PREV_STATE is not None:
+                    state = _PREV_STATE
+                else:
+                    # Fallback: build from current data
+                    speed = sts.get("current_speed_kmh", 0) or 0
+                    raw = {
+                        "lat": pts[-1].get("lat") if pts else None,
+                        "lng": pts[-1].get("lng") if pts else None,
+                        "speed_kmh": speed,
+                        "battery": _CURRENT_BATTERY,
+                        "accuracy": None,
+                        "address": _CURRENT_ADDRESS or "",
+                        "charging": _CURRENT_CHARGING if _CURRENT_CHARGING else None,
+                        "timestamp": _LAST_UPDATE.isoformat() if _LAST_UPDATE else None,
+                    }
+                    state = build_state(raw, None)
 
                 self._send_json({
                     "points": pts,
                     "stats": sts,
                     "state": state,
-                    "activity_score": state["activity_score"],
+                    "activity_score": state["activity"]["score"],
                     "ui_status": state["activity"]["ui_status"],
                     "battery": _CURRENT_BATTERY,
                     "battery_life": _BATTERY_LIFE_ESTIMATE,
