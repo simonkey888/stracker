@@ -403,6 +403,217 @@ def compute_stats(points):
     }
 
 
+# ════════════════════════════════════════════════════════════════
+# PIPELINE DE ESTADO — SOURCE OF TRUTH
+# ════════════════════════════════════════════════════════════════
+def compute_state(points, stats, is_home, is_working, battery=None, charging=None, address="", accuracy=None):
+    """Construye el STATE object normalizado. UI solo lee esto."""
+    last = points[-1] if points else {}
+    speed = stats.get("current_speed_kmh", 0) or 0
+
+    # Zone determination (backend only)
+    if is_home:
+        zone = "HOME"
+    elif is_working:
+        zone = "WORK"
+    elif speed > 3:
+        zone = "TRANSIT"
+    else:
+        zone = "UNKNOWN"
+
+    # Dwell time in current zone (seconds)
+    dwell_time_sec = 0
+    if points and len(points) >= 2:
+        for i in range(len(points) - 1, 0, -1):
+            p = points[i]
+            lat, lng = p.get("lat", 0), p.get("lng", 0)
+            if zone == "HOME" and not is_in_home_zone(lat, lng):
+                break
+            elif zone == "WORK" and not is_in_work_zone(lat, lng):
+                break
+            try:
+                tb = datetime.fromisoformat(points[i]["timestamp"])
+                ta = datetime.fromisoformat(points[i - 1]["timestamp"])
+                dwell_time_sec += (tb - ta).total_seconds()
+            except Exception:
+                pass
+
+    # GPS quality heuristic (0-1)
+    acc = accuracy or 50
+    gps_quality = max(0, min(1, 1 - (acc / 200)))
+
+    # Stability: ratio of non-stationary points
+    stability = 0.8
+    if points and len(points) > 5:
+        moving = sum(1 for p in points[-20:] if (p.get("speed_kmh") or 0) > 1)
+        stability = min(1, moving / min(20, len(points)))
+
+    # GhostRail: compute heat zones from 24h data
+    heat_zones = _compute_heat_zones(points)
+    distance_24h = stats.get("total_distance_km", 0) or 0
+
+    # Activity score for 24h
+    score_24h = _compute_ghostrail_score(points, stats)
+
+    # Connection type
+    signal = "GPS"
+    if acc and acc > 100:
+        signal = "NETWORK"
+    elif acc and acc > 50:
+        signal = "MIX"
+
+    # UI status label (backend-computed, frontend just displays)
+    if zone == "HOME":
+        ui_status = "EN CASA"
+    elif zone == "WORK":
+        ui_status = "TRABAJANDO"
+    elif zone == "TRANSIT":
+        ui_status = "EN MOVIMIENTO"
+    else:
+        ui_status = "INACTIVO"
+
+    state = {
+        "location": {
+            "lat": last.get("lat", 0),
+            "lng": last.get("lng", 0),
+            "address": address or "",
+            "accuracy": acc or 0,
+        },
+        "motion": {
+            "speed_kmh": round(speed, 1),
+            "velocity_smooth": round(speed, 1),
+            "is_moving": speed > 3,
+        },
+        "activity": {
+            "zone": zone,
+            "ui_status": ui_status,
+            "dwell_time_sec": int(dwell_time_sec),
+            "confidence_zone": round(gps_quality * 0.8 + 0.2, 2),
+        },
+        "device": {
+            "battery": battery,
+            "charging": charging or False,
+            "signal": signal,
+        },
+        "health": {
+            "gps_quality": round(gps_quality, 2),
+            "stability": round(stability, 2),
+        },
+        "ghostrail": {
+            "score_24h": score_24h,
+            "distance_24h_km": round(distance_24h, 2),
+            "heat_zones": heat_zones,
+        },
+    }
+
+    # Activity score: 0-100 real
+    state["activity_score"] = compute_activity_score(state)
+
+    return state
+
+
+def compute_activity_score(state):
+    """0-100 score basado en el STATE object. Sin ambigüedad."""
+    score = 0
+
+    # Movement component (0-40)
+    speed = state["motion"]["speed_kmh"]
+    if speed > 5:
+        score += 40
+    elif speed > 1:
+        score += 20
+
+    # Zone component (0-50)
+    zone = state["activity"]["zone"]
+    if zone == "WORK":
+        score += 50
+    elif zone == "TRANSIT":
+        score += 30
+    elif zone == "HOME":
+        score += 10
+
+    # GPS quality (0-20)
+    score += state["health"]["gps_quality"] * 20
+
+    # Battery influence (0-10, minor)
+    battery = state["device"]["battery"]
+    if battery is not None:
+        try:
+            bp = int(str(battery).replace("%", ""))
+            score += (bp / 100) * 10
+        except (ValueError, TypeError):
+            pass
+
+    return min(100, round(score))
+
+
+def _compute_heat_zones(points):
+    """Top 3 zonas por dwell time. Para GhostRail."""
+    if not points or len(points) < 2:
+        return []
+
+    zones_data = {}
+    cur_zone = None
+    cur_start = None
+
+    for p in points:
+        lat, lng = p.get("lat", 0), p.get("lng", 0)
+        if is_in_home_zone(lat, lng):
+            zone = "Casa"
+        elif is_in_work_zone(lat, lng):
+            zone = "Trabajo"
+        else:
+            zone = "En tránsito"
+
+        if zone != cur_zone:
+            if cur_zone is not None and cur_start is not None:
+                try:
+                    end = datetime.fromisoformat(p["timestamp"])
+                    dur = (end - cur_start).total_seconds()
+                    zones_data[cur_zone] = zones_data.get(cur_zone, 0) + dur
+                except Exception:
+                    pass
+            cur_zone = zone
+            try:
+                cur_start = datetime.fromisoformat(p["timestamp"])
+            except Exception:
+                cur_start = None
+
+    # Close last segment
+    if cur_zone is not None and cur_start is not None and points:
+        try:
+            end = datetime.fromisoformat(points[-1]["timestamp"])
+            dur = (end - cur_start).total_seconds()
+            zones_data[cur_zone] = zones_data.get(cur_zone, 0) + dur
+        except Exception:
+            pass
+
+    # Sort by duration, top 3
+    sorted_zones = sorted(zones_data.items(), key=lambda x: x[1], reverse=True)[:3]
+    return [{"name": name, "duration_sec": int(dur)} for name, dur in sorted_zones]
+
+
+def _compute_ghostrail_score(points, stats):
+    """Activity score ponderado por distancia para 24h."""
+    if not points or len(points) < 2:
+        return 0
+
+    total_s = stats.get("total_time_s", 0) or 0
+    moving_s = stats.get("moving_time_s", 0) or 0
+    dist_km = stats.get("total_distance_km", 0) or 0
+
+    if total_s == 0:
+        return 0
+
+    # Base: moving time ratio (0-60 points)
+    time_score = min(60, (moving_s / total_s) * 60)
+
+    # Distance bonus (0-40 points, max at 10km)
+    dist_score = min(40, (dist_km / 10) * 40)
+
+    return min(100, round(time_score + dist_score))
+
+
 def extract_battery_from_page(page, page_url=""):
     """
     Extrae el % de bateria del panel de Live Location.
@@ -1405,6 +1616,18 @@ def generate_html(points, stats, battery=None, is_working=False, spoofing_icon="
     stats_json = json.dumps(stats)
     battery_json = json.dumps(battery) if battery else "null"
 
+    # Compute normalized STATE object
+    state = compute_state(
+        points, stats,
+        is_home=is_home,
+        is_working=is_working,
+        battery=battery,
+        charging=None,
+        address=address,
+        accuracy=None,
+    )
+    state_json = json.dumps(state)
+
     last_ts = ""
     last_coord = ""
     if points:
@@ -1469,6 +1692,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text'
 #bottomCard::-webkit-scrollbar{width:0;display:none}
 @media(min-width:700px){
   #bottomCard{left:50%;right:auto;transform:translateX(-50%);width:440px;max-width:90vw;border-radius:16px 16px 0 0;border:1px solid #1f1f1f;border-bottom:none}
+  #headerCard{left:calc(50% - 220px + 12px)}
+  #floatBtns{right:calc(50% - 220px - 60px)}
 }
 
 /* ---- Status row ---- */
@@ -1477,37 +1702,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text'
 .st-state.home{color:#34c759}
 .st-state.work{color:#007aff}
 .st-state.moving{color:#ff9500}
-.st-state.stopped{color:#8a8a8a}
+.st-state.inactive{color:#8a8a8a}
 .st-speed{font-size:20px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums;line-height:1}
 .st-speed-unit{font-size:12px;color:#8a8a8a;font-weight:500;margin-left:2px}
 
-/* ---- Meta row ---- */
-#metaRow{display:flex;align-items:center;gap:14px;font-size:13px;color:#8a8a8a;margin-bottom:12px;flex-wrap:wrap;min-height:0}
-#metaRow:empty{margin-bottom:0}
-.meta-item{display:inline-flex;align-items:center;gap:5px}
-.meta-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.meta-dot.green{background:#34c759}
-.meta-dot.blue{background:#007aff}
-.meta-dot.orange{background:#ff9500}
-.meta-dot.gray{background:#8a8a8a}
-.meta-dot.red{background:#ff3b30}
-.meta-val{color:#fff;font-weight:500}
+/* ---- Activity score ---- */
+#actRow{display:flex;align-items:baseline;gap:6px;margin-bottom:10px}
+.act-label{font-size:12px;color:#8a8a8a;font-weight:500}
+.act-val{font-size:18px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
+.act-pct{font-size:12px;color:#8a8a8a;font-weight:500}
+.act-bar-wrap{flex:1;height:4px;border-radius:2px;background:#1f1f1f;overflow:hidden;margin-left:8px}
+.act-bar-fill{height:100%;border-radius:2px;transition:width .5s}
 
-/* ---- GhostRail ---- */
-#grSection{margin-bottom:12px}
-.gr-title{font-size:11px;font-weight:600;color:#8a8a8a;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
-.gr-bar-wrap{height:8px;border-radius:4px;background:#1f1f1f;overflow:hidden;display:flex}
-.gr-bar-seg{height:100%;min-width:2px}
-.gr-bar-seg.home{background:#34c759}
-.gr-bar-seg.work{background:#007aff}
-.gr-bar-seg.transit{background:#ff9500}
-.gr-legend{display:flex;gap:14px;margin-top:6px;flex-wrap:wrap}
-.gr-legend-item{display:flex;align-items:center;gap:4px;font-size:12px;color:#8a8a8a}
-.gr-legend-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0}
-.gr-legend-dot.home{background:#34c759}
-.gr-legend-dot.work{background:#007aff}
-.gr-legend-dot.transit{background:#ff9500}
-.gr-legend-dur{color:#fff;font-weight:500}
+/* ---- GhostRail mini ---- */
+#grSection{margin-bottom:10px}
+.gr-line{display:flex;align-items:center;gap:10px;font-size:12px;color:#8a8a8a;flex-wrap:wrap}
+.gr-item{display:inline-flex;align-items:center;gap:4px}
+.gr-dot{width:6px;height:6px;border-radius:2px;flex-shrink:0}
+.gr-dot.home{background:#34c759}
+.gr-dot.work{background:#007aff}
+.gr-dot.transit{background:#ff9500}
+.gr-dur{color:#fff;font-weight:500}
+.gr-dist{color:#fff;font-weight:500;margin-left:auto}
 
 /* ---- Timeline slider ---- */
 #tlSection{margin-top:2px}
@@ -1570,13 +1786,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text'
   <div id="mbPlaceRow"><span class="place-text" id="mbPlaceName"></span></div>
   <!-- Anomaly -->
   <div id="mbAnomaly"><span class="anomaly-text" id="mbAnomalyMsg"></span></div>
-  <!-- Meta row -->
-  <div id="metaRow"></div>
-  <!-- GhostRail 24h -->
+  <!-- Activity score -->
+  <div id="actRow" style="display:none">
+    <span class="act-label">Actividad</span>
+    <span class="act-val" id="actVal">0</span><span class="act-pct">%</span>
+    <div class="act-bar-wrap"><div class="act-bar-fill" id="actBar" style="width:0;background:#8a8a8a"></div></div>
+  </div>
+  <!-- GhostRail mini 24h -->
   <div id="grSection" style="display:none">
-    <div class="gr-title">Actividad 24h</div>
-    <div class="gr-bar-wrap" id="grBar"></div>
-    <div class="gr-legend" id="grLegend"></div>
+    <div class="gr-line" id="grLine"></div>
   </div>
   <div class="sep"></div>
   <!-- Timeline -->
@@ -1619,6 +1837,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text'
   <div class="dbg-row"><span>gps</span><span class="dbg-val" id="dbgSpoof">""" + spoofing_icon + """</span></div>
   <div class="dbg-row"><span>coord</span><span class="dbg-val" id="dbgCoord">---</span></div>
   <div class="dbg-row"><span>dir</span><span class="dbg-val" id="dbgAddr">""" + (address if address else "---") + """</span></div>
+  <div class="dbg-row"><span>zona</span><span class="dbg-val" id="dbgZone">---</span></div>
+  <div class="dbg-row"><span>actividad</span><span class="dbg-val" id="dbgActivity">---</span></div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -1636,6 +1856,12 @@ var jumpNotification = """ + json.dumps(jump_notification) + """;
 var INIT_IS_HOME = """ + ("true" if is_home else "false") + """;
 var INIT_IS_WORKING = """ + ("true" if is_working else "false") + """;
 var INIT_ADDRESS = """ + json.dumps(address if address else "") + """;
+var INIT_STATE = """ + state_json + """;
+var INIT_ACTIVITY_SCORE = """ + str(state["activity_score"]) + """;
+var INIT_UI_STATUS = """ + json.dumps(state["activity"]["ui_status"]) + """;
+var INIT_ZONE = """ + json.dumps(state["activity"]["zone"]) + """;
+var INIT_HEAT_ZONES = """ + json.dumps(state["ghostrail"]["heat_zones"]) + """;
+var INIT_DISTANCE_KM = """ + str(state["ghostrail"]["distance_24h_km"]) + """;
 
 var REFRESH_MS = """ + str(int(os.environ.get("REFRESH_INTERVAL_MS", "10000"))) + """;
 var USER_HOME = {lat:-31.643, lng:-60.714};
@@ -1737,12 +1963,10 @@ function _fmtDur(s){
 }
 
 /* ====================================================================
-   HUD UPDATE
+   HUD UPDATE — lee STATE del backend, sin cálculos locales
    ==================================================================== */
 function _updateHUD(opts){
     var speed=opts.speed||0;
-    var isHome=opts.isHome||false;
-    var isWorking=opts.isWorking||false;
     var hasData=opts.hasData||false;
 
     /* Header address */
@@ -1755,18 +1979,21 @@ function _updateHUD(opts){
     var dot=document.getElementById('hDot');
     if(dot){dot.className=hasData?'h-dot':'h-dot offline'}
 
-    /* Status row */
+    /* Status row — usa ui_status del pipeline */
     var sr=document.getElementById('statusRow');
     var ss=document.getElementById('stState');
     var sp=document.getElementById('stSpeed');
     if(!sr)return;
 
-    if(hasData&&(isHome||isWorking||speed>0)){
+    if(hasData&&opts.uiStatus){
         sr.style.display='flex';
-        if(isHome){ss.textContent='EN CASA';ss.className='st-state home'}
-        else if(isWorking){ss.textContent='TRABAJANDO';ss.className='st-state work'}
-        else if(speed>3){ss.textContent='EN MOVIMIENTO';ss.className='st-state moving'}
-        else{ss.textContent='DETENIDO';ss.className='st-state stopped'}
+        ss.textContent=opts.uiStatus;
+        /* Clase CSS basada en zone del backend */
+        var zone=opts.zone||'UNKNOWN';
+        if(zone==='HOME')ss.className='st-state home';
+        else if(zone==='WORK')ss.className='st-state work';
+        else if(zone==='TRANSIT')ss.className='st-state moving';
+        else ss.className='st-state inactive';
 
         if(speed>3){sp.style.display='block';sp.innerHTML=Math.round(speed)+'<span class="st-speed-unit">km/h</span>'}
         else{sp.style.display='none'}
@@ -1774,26 +2001,24 @@ function _updateHUD(opts){
         sr.style.display='none';
     }
 
-    /* Meta row */
-    var mr=document.getElementById('metaRow');
-    var mh='';
-    /* Battery */
-    if(opts.batteryPct!=null&&opts.batteryPct!=='N/A'&&opts.batteryPct!==''){
-        var bp=typeof opts.batteryPct==='string'?opts.batteryPct.replace('%',''):opts.batteryPct;
-        var chargeTxt=opts.batteryCharging?'Cargando':'Descargando';
-        mh+='<span class="meta-item"><span class="meta-dot green"></span><span class="meta-val">'+bp+'%</span> '+chargeTxt+'</span>';
-    }
-    /* Activity */
-    if(hasData){
-        if(speed>3)mh+='<span class="meta-item"><span class="meta-dot blue"></span>Activo</span>';
-        else mh+='<span class="meta-item"><span class="meta-dot gray"></span>Reposo</span>';
-    }
-    /* Vehicle */
-    if(speed>35)mh+='<span class="meta-item"><span class="meta-dot orange"></span>Vehiculo</span>';
-    else if(speed>=6&&speed<=20)mh+='<span class="meta-item"><span class="meta-dot orange"></span>Caminando</span>';
-    mr.innerHTML=mh;
+    /* Activity score — del pipeline, sin cálculo local */
+    var ar=document.getElementById('actRow');
+    var av=document.getElementById('actVal');
+    var ab=document.getElementById('actBar');
+    if(ar&&hasData){
+        ar.style.display='flex';
+        var score=opts.activityScore||0;
+        if(av)av.textContent=score;
+        if(ab){
+            ab.style.width=score+'%';
+            /* Color según score */
+            if(score>=60)ab.style.background='#34c759';
+            else if(score>=30)ab.style.background='#ff9500';
+            else ab.style.background='#8a8a8a';
+        }
+    }else if(ar){ar.style.display='none'}
 
-    /* Debug */
+    /* Debug — todo lo demás queda oculto */
     var h=function(id,val){var e=document.getElementById(id);if(e)e.textContent=val};
     if(opts.speed!=null)h('dbgSpeed',opts.speed);
     if(opts.maxSpeed!=null)h('dbgMaxSpeed',Number(opts.maxSpeed).toFixed(1));
@@ -1807,57 +2032,30 @@ function _updateHUD(opts){
     if(opts.spoofing!=null)h('dbgSpoof',opts.spoofing);
     if(opts.coords!=null)h('dbgCoord',opts.coords);
     if(opts.address!=null)h('dbgAddr',opts.address);
+    if(opts.activityScore!=null)h('dbgActivity',opts.activityScore);
+    if(opts.zone!=null)h('dbgZone',opts.zone);
 }
 
 /* ====================================================================
-   GHOSTRAIL 24H
+   GHOSTRAIL MINI — lee heat_zones del backend, sin cálculo local
    ==================================================================== */
-function _buildGhostRail(points){
-    if(!points||points.length<2)return;
-    var zones=[],curZone=null,curStart=null;
-    for(var i=0;i<points.length;i++){
-        var p=points[i];
-        var zone='transit';
-        var dh=_distanceMeters(p.lat,p.lng,USER_HOME.lat,USER_HOME.lng);
-        if(dh<=USER_HOME_RADIUS_M)zone='home';
-        else{var dw=_distanceMeters(p.lat,p.lng,WORK_LOCATION.lat,WORK_LOCATION.lng);if(dw<=WORK_RADIUS_M)zone='work'}
-        if(zone!==curZone){
-            if(curZone!==null)zones.push({zone:curZone,start:curStart,end:new Date(p.timestamp)});
-            curZone=zone;curStart=new Date(p.timestamp);
-        }
-    }
-    if(curZone!==null)zones.push({zone:curZone,start:curStart,end:new Date(points[points.length-1].timestamp)});
-
-    var totals={home:0,work:0,transit:0};
-    zones.forEach(function(z){totals[z.zone]+=(z.end-z.start)/1000});
-    var totalDur=totals.home+totals.work+totals.transit;
-    if(totalDur<60)return;
-
+function _buildGhostRail(heatZones,distKm){
+    if(!heatZones||!heatZones.length)return;
     var gs=document.getElementById('grSection');
-    if(gs)gs.style.display='block';
+    var gl=document.getElementById('grLine');
+    if(!gs||!gl)return;
 
-    var bar=document.getElementById('grBar');
-    if(bar){
-        bar.innerHTML='';
-        zones.forEach(function(z){
-            var pct=(z.end-z.start)/1000/totalDur*100;
-            if(pct<.5)return;
-            var seg=document.createElement('div');
-            seg.className='gr-bar-seg '+z.zone;
-            seg.style.width=pct+'%';
-            bar.appendChild(seg);
-        });
+    gs.style.display='block';
+    var html='';
+    var zoneClass={'Casa':'home','Trabajo':'work','En tránsito':'transit'};
+    heatZones.forEach(function(z){
+        var cls=zoneClass[z.name]||'transit';
+        html+='<span class="gr-item"><span class="gr-dot '+cls+'"></span>'+z.name+' <span class="gr-dur">'+_fmtDur(z.duration_sec)+'</span></span>';
+    });
+    if(distKm!=null&&distKm>0){
+        html+='<span class="gr-dist">'+distKm.toFixed(1)+' km</span>';
     }
-    var leg=document.getElementById('grLegend');
-    if(leg){
-        var html='';
-        var labels={home:'Casa',work:'Trabajo',transit:'En transito'};
-        for(var k in totals){
-            if(totals[k]<30)continue;
-            html+='<span class="gr-legend-item"><span class="gr-legend-dot '+k+'"></span>'+labels[k]+' <span class="gr-legend-dur">'+_fmtDur(totals[k])+'</span></span>';
-        }
-        leg.innerHTML=html;
-    }
+    gl.innerHTML=html;
 }
 
 /* ====================================================================
@@ -1979,27 +2177,27 @@ window.__tracker={
 
 console.log('[Tracker] Renderizado OK');
 
-/* ---- Initial HUD ---- */
+/* ---- Initial HUD — reads STATE pipeline ---- */
 _updateHUD({
     speed:stats.current_speed_kmh||0,
-    isHome:INIT_IS_HOME,
-    isWorking:INIT_IS_WORKING,
     hasData:pts.length>0,
-    batteryPct:batteryInfo,
-    batteryCharging:false,
-    batteryLife:batteryLife,
     address:INIT_ADDRESS,
+    activityScore:INIT_ACTIVITY_SCORE,
+    uiStatus:INIT_UI_STATUS,
+    zone:INIT_ZONE,
     maxSpeed:stats.max_speed_kmh,
     totalDist:stats.total_distance_km,
     movingTime:stats.moving_time_s,
     stoppedTime:stats.stopped_time_s,
     pointCount:pts.length,
     heading:stats.current_heading_name,
+    batteryPct:batteryInfo,
+    batteryLife:batteryLife,
     coords:pts.length>0?pts[pts.length-1].lat.toFixed(5)+', '+pts[pts.length-1].lng.toFixed(5):null
 });
 
-/* ---- GhostRail ---- */
-_buildGhostRail(pts);
+/* ---- GhostRail mini — reads backend heat_zones ---- */
+_buildGhostRail(INIT_HEAT_ZONES,INIT_DISTANCE_KM);
 
 /* ---- Relative time updater ---- */
 if(pts.length>0){
@@ -2132,26 +2330,28 @@ setInterval(async function(){
             if(t.heatVisible)t.map.addLayer(t.heatLayer);
         }
 
-        /* ---- HUD update ---- */
+        /* ---- HUD update — reads STATE from /points ---- */
         var s=body.stats||{};
-        var showingWork=body.is_working?true:false;
-        var showingHome=(!body.is_working&&body.is_home)?true:false;
+        var st=body.state||{};
+        var activityScore=body.activity_score||0;
+        var uiStatus=body.ui_status||'INACTIVO';
+        var zone=body.zone||'UNKNOWN';
 
         _updateHUD({
             speed:s.current_speed_kmh||0,
-            isHome:showingHome,
-            isWorking:showingWork,
             hasData:true,
-            batteryPct:body.battery,
-            batteryCharging:body.charging||false,
-            batteryLife:body.battery_life,
             address:body.address,
+            activityScore:activityScore,
+            uiStatus:uiStatus,
+            zone:zone,
             maxSpeed:s.max_speed_kmh,
             totalDist:s.total_distance_km,
             movingTime:s.moving_time_s,
             stoppedTime:s.stopped_time_s,
             pointCount:newPts.length,
             heading:s.current_heading_name,
+            batteryPct:body.battery,
+            batteryLife:body.battery_life,
             spoofing:body.spoofing!=null?['OK','?','!'][body.spoofing]||'OK':'OK',
             coords:last.lat.toFixed(5)+', '+last.lng.toFixed(5)
         });
@@ -2174,6 +2374,8 @@ setInterval(async function(){
         if(body.last_update){_lastTs=new Date(body.last_update).getTime()}else{_lastTs=new Date(last.timestamp).getTime()}
 
         /* ---- Geofence alert: salida del trabajo ---- */
+        var showingWork=zone==='WORK';
+        var showingHome=zone==='HOME';
         if(_wasWorking&&!showingWork){
             var toastText=showingHome?'Llego a casa':'Salio del trabajo';
             var toast=document.getElementById('jumpToast');
@@ -2230,7 +2432,7 @@ setInterval(async function(){
         if(!isAtUserHome&&_wasAlerted)_wasAlerted=false;
 
         /* ---- Title ---- */
-        document.title=(s.current_speed_kmh>2)?'EN MOVIMIENTO - Tracker':'Tracker';
+        document.title=(zone==='TRANSIT')?'EN MOVIMIENTO - Tracker':'Tracker';
 
         /* ---- Timeline ---- */
         if(newMarkers.length>0){
@@ -2254,8 +2456,10 @@ setInterval(async function(){
         /* ---- Update tracker state ---- */
         t.pts=newPts;t.allMarkers=newMarkers;t.routeSegments=newSegments;t.lastPointCount=newPts.length;
 
-        /* ---- GhostRail update ---- */
-        _buildGhostRail(newPts);
+        /* ---- GhostRail mini update — reads backend ---- */
+        if(st&&st.ghostrail){
+            _buildGhostRail(st.ghostrail.heat_zones,st.ghostrail.distance_24h_km);
+        }
 
         /* ---- User distance ---- */
         if(window._updateUserDist)window._updateUserDist();
@@ -2445,14 +2649,28 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                             'TRABAJANDO' if _IS_WORKING else ('CASA' if _IS_AT_HOME else 'EN TRÁNSITO'),
                             _CURRENT_CONNECTION,
                             _LAST_UPDATE.isoformat() if _LAST_UPDATE else None)
+                # Pipeline de estado normalizado (source of truth)
+                state = compute_state(
+                    pts, sts,
+                    is_home=_IS_AT_HOME,
+                    is_working=_IS_WORKING,
+                    battery=_CURRENT_BATTERY,
+                    charging=_CURRENT_CHARGING if _CURRENT_CHARGING else None,
+                    address=_CURRENT_ADDRESS or "",
+                    accuracy=None,
+                )
+
                 self._send_json({
                     "points": pts,
                     "stats": sts,
+                    "state": state,
+                    "activity_score": state["activity_score"],
+                    "ui_status": state["activity"]["ui_status"],
                     "battery": _CURRENT_BATTERY,
                     "battery_life": _BATTERY_LIFE_ESTIMATE,
                     "jump_notification": _JUMP_NOTIFICATION,
                     "address": _CURRENT_ADDRESS or "",
-                    "zone": "TRABAJANDO" if _IS_WORKING else ("CASA" if _IS_AT_HOME else "EN TRÁNSITO"),
+                    "zone": state["activity"]["zone"],
                     "network": _CURRENT_CONNECTION,
                     "user_distance": None,
                     "is_working": _IS_WORKING,
