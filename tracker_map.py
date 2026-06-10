@@ -1108,7 +1108,10 @@ def tracking_loop(stop_event):
                 if _no_coords_count >= 3:
                     _no_coords_count = 0
                     logger.info("--- 3 polls sin coordenadas, refrescando cookies ---")
-                    _refresh_cookies_via_playwright()
+                    if not SKIP_PLAYWRIGHT:
+                        _refresh_cookies_via_playwright()
+                    else:
+                        logger.warning("Cookies expiradas. Cargá nuevas via /cookies.html")
                 # No actualizar _LAST_POLL en polls sin coordenadas
 
         except Exception as e:
@@ -2914,13 +2917,6 @@ def main():
     #    Reintentamos para siempre con backoff hasta que el usuario haga Ctrl+C.
     backoff = 5
     while not stop_event.is_set():
-        if SKIP_PLAYWRIGHT:
-            logger.warning(
-                "TRACKER_SKIP_PLAYWRIGHT=1 activo: tracking deshabilitado, "
-                "solo corre el servidor HTTP."
-            )
-            stop_event.wait()
-            break
         try:
             tracking_loop(stop_event)
             if stop_event.is_set():
