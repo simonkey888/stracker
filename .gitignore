@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Playwright
+playwright_profile/
+
+# Debug / logs
+debug_battery.html
+tracker.log
+
+# Data efimero (se regenera en runtime)
+historial.csv
+mapa.html
+analisis.json
+eventos.json
+
+# Debug / test scripts
+dump_u1.py
+_test_cookies.py
+
+# Intento anterior de deploy (no pertenece al tracker)
+tracker-render/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,3 @@
+# tracker_map.py - requirements
+# Todos los imports son stdlib. Sin dependencias externas obligatorias.
+# En Render se usa TRACKER_SKIP_PLAYWRIGHT=1 (no se necesita playwright).
