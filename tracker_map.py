@@ -1465,7 +1465,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text'
 .h-time{font-size:11px;color:#636363;margin-top:2px}
 
 /* ---- Bottom card ---- */
-#bottomCard{position:fixed;bottom:0;left:0;right:0;z-index:1000;background:rgba(17,17,17,.92);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-top:1px solid #1f1f1f;padding:14px 16px 24px;transition:transform .3s}
+#bottomCard{position:fixed;bottom:0;left:0;right:0;z-index:1000;background:rgba(17,17,17,.92);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-top:1px solid #1f1f1f;padding:14px 16px calc(24px + env(safe-area-inset-bottom, 0px));transition:transform .3s;max-height:55vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
 #bottomCard::-webkit-scrollbar{width:0;display:none}
 @media(min-width:700px){
   #bottomCard{left:50%;right:auto;transform:translateX(-50%);width:440px;max-width:90vw;border-radius:16px 16px 0 0;border:1px solid #1f1f1f;border-bottom:none}
@@ -1517,8 +1517,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text'
 .tl-labels{display:flex;justify-content:space-between;font-size:10px;color:#636363;margin-top:3px}
 
 /* ---- Floating buttons ---- */
-#floatBtns{position:fixed;right:12px;z-index:1000;display:flex;flex-direction:column;gap:8px}
-.fb{width:36px;height:36px;border-radius:50%;background:rgba(17,17,17,.82);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid #1f1f1f;color:#8a8a8a;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;padding:0;-webkit-tap-highlight-color:transparent}
+#floatBtns{position:fixed;right:12px;bottom:280px;z-index:1000;display:flex;flex-direction:column;gap:8px}
+.fb{width:44px;height:44px;border-radius:50%;background:rgba(17,17,17,.82);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid #1f1f1f;color:#8a8a8a;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;padding:0;-webkit-tap-highlight-color:transparent}
 .fb:hover{background:rgba(30,30,30,.9);color:#fff}
 .fb:active{transform:scale(.9)}
 .fb.active{color:#007aff;border-color:#007aff}
