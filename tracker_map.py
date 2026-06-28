@@ -858,15 +858,19 @@ def _compute_proximity(lat, lng, mode):
     return result
 
 
-def _compute_ghostrail(prev_state, lat, lng, speed, zone):
-    """GhostRail v6: restored timeline with last_zones max 5."""
+def _compute_ghostrail(prev_state, lat, lng, speed, zone, timestamp=None):
+    """GhostRail v6: restored timeline with last_zones max 5.
+    V6.9: each point now carries an ISO timestamp so the frontend GhostTrail
+    memo no longer discards them (discarded_no_ts). The timestamp comes from
+    the polling loop's UTC datetime — passed in as `timestamp`."""
     zone_map = {"HOME": "Casa", "WORK": "Trabajo", "TRANSIT": "En ruta", "IDLE": "Otro"}
     zone_label = zone_map.get(zone, "Otro")
+    ts_iso = timestamp.isoformat() if hasattr(timestamp, "isoformat") else (timestamp or None)
 
     if not prev_state:
         return {
             "enabled": True,
-            "points_24h": [{"lat": lat, "lng": lng, "zone": zone_label}] if lat and lng else [],
+            "points_24h": [{"lat": lat, "lng": lng, "zone": zone_label, "timestamp": ts_iso}] if lat and lng else [],
             "last_zones": [{"name": zone_label, "min": 1}],
             "timeline_active": True,
         }
@@ -877,7 +881,7 @@ def _compute_ghostrail(prev_state, lat, lng, speed, zone):
 
     # Add point (keep last 200)
     if lat is not None and lng is not None:
-        points_24h.append({"lat": lat, "lng": lng, "zone": zone_label})
+        points_24h.append({"lat": lat, "lng": lng, "zone": zone_label, "timestamp": ts_iso})
     if len(points_24h) > 200:
         points_24h = points_24h[-200:]
 
@@ -973,7 +977,7 @@ def build_state(raw, prev_state=None):
     proximity = _compute_proximity(lat, lng, mode)
 
     # ── 9. GHOSTRAIL (restored) ──
-    ghostrail = _compute_ghostrail(prev_state, lat, lng, speed_kmh, zone)
+    ghostrail = _compute_ghostrail(prev_state, lat, lng, speed_kmh, zone, timestamp)
 
     # ── 10. EVENTS FIFO ──
     events = list(prev_state.get("events", [])) if prev_state else []
@@ -2632,10 +2636,33 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                         state["location"]["status"] = "no_location"
                         state["location"]["label_primary"] = "Sin señal"
                         state["location"]["signal"] = "no_location"
-                # Extract ghostrail_pts from state for frontend compatibility
+                # Extract ghostrail_pts for frontend ghost trail rendering.
+                # V6.9 IMMORTAL HISTORY: prefer the CSV-derived 24h points (which
+                # carry valid ISO timestamps AND survive cold starts via the gist
+                # sync). The in-memory state.ghostrail.points_24h buffer lacks
+                # timestamps and resets on every restart — using it alone caused
+                # the frontend memo to discard every point (discarded_no_ts) and
+                # rendered no trail. The CSV is now the canonical immortal source.
                 ghostrail_pts = []
-                if isinstance(state, dict) and "ghostrail" in state:
-                    ghostrail_pts = state["ghostrail"].get("points_24h", [])
+                try:
+                    csv_pts = read_all_points()  # 24h window, ISO-timestamped
+                    if csv_pts:
+                        # CSV points already have {timestamp, lat, lng, speed_kmh,
+                        # heading, movement_state, address, accuracy} — exactly
+                        # what the frontend GhostTrail memo expects.
+                        ghostrail_pts = csv_pts
+                except Exception as _e:
+                    logger.warning("V6.9 ghostrail CSV read failed: %s", _e)
+                # Fallback: if CSV is empty (first-ever boot, gist not yet
+                # populated), use the in-memory buffer so the trail isn't blank.
+                if not ghostrail_pts and isinstance(state, dict) and "ghostrail" in state:
+                    mem_pts = state["ghostrail"].get("points_24h", [])
+                    # Inject the current timestamp so the frontend filter keeps them.
+                    _now_iso = datetime.now(timezone.utc).isoformat()
+                    ghostrail_pts = [
+                        {**p, "timestamp": p.get("timestamp") or _now_iso}
+                        for p in mem_pts
+                    ]
                 # RA29 BACKEND_DATA_ENRICHMENT: surface the cached device label in
                 # the /points response. Injected under both state.device.device_label
                 # (colocated with battery/charging) and state.meta.device_label
