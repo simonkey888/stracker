@@ -1,0 +1,590 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+/* V5.5 DEEP BLACK (Apple Maps Black aesthetic) — pure #000000 base.
+   Panels float as subtle projections via aggressive backdrop-filter. */
+.dark {
+  --background: oklch(0 0 0);            /* #000000 — pure black canvas */
+  --foreground: oklch(0.985 0 0);        /* near-white text */
+  --card: oklch(0.12 0 0);               /* ~rgba(10,10,10,.85) when stacked on black */
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.12 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.985 0 0);
+  --primary-foreground: oklch(0 0 0);
+  --secondary: oklch(0.18 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.18 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.18 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.985 0 0);       /* monochrome — no red */
+  --border: oklch(1 0 0 / 5%);           /* rgba(255,255,255,0.05) */
+  --input: oklch(1 0 0 / 8%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.985 0 0);
+  --chart-2: oklch(0.708 0 0);
+  --chart-3: oklch(0.556 0 0);
+  --chart-4: oklch(0.408 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.12 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.985 0 0);
+  --sidebar-primary-foreground: oklch(0 0 0);
+  --sidebar-accent: oklch(0.18 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 5%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════ */
+/* RA24 — DEBUG-HIDDEN UTILITY                                     */
+/* ════════════════════════════════════════════════════════════════ */
+/* Per stracker_production_sanitization directive: any debug artifact
+   (crosshair, raw-coord overlay, test rectangle) must be forced
+   `display: none` in production via this utility class. Apply
+   `.debug-hidden` to any element that should NEVER render in
+   production. Code is preserved; only the visual is suppressed.    */
+.debug-hidden {
+  display: none !important;
+}
+
+/* ════════════════════════════════════════════════════════════════ */
+/* V2 — APPLE MAPS MICRO-MOTION ANIMATIONS                         */
+/* ════════════════════════════════════════════════════════════════ */
+/* Philosophy: Apple Maps = subtle, purposeful, never flashy        */
+/*   - Breathe = very slow, very subtle scale (0.97 → 1.03)       */
+/*   - Glow = soft blue pulse (#0A84FF) when navigating           */
+/*   - Alert = red pulse (#FF453A) when anomalous                  */
+/*   - Pulse ring = one ring per update, subtle                     */
+/*   - Arrival = soft green glow pulse (#30D158)                   */
+/*   - All easing = ease-out cubic (Apple signature)                */
+/*   - Durations: 200–400ms for UI, 400ms for camera               */
+/* ════════════════════════════════════════════════════════════════ */
+
+/* Pin breathe — very slow, very subtle idle animation */
+@keyframes pin-breathe-subtle {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+
+/* Pin glow for navigation — Apple blue pulse (location dot is the ONLY
+   colored element in the Deep Black aesthetic). */
+@keyframes pin-glow-nav {
+  0%, 100% {
+    box-shadow: 0 0 12px rgba(10,132,255,0.35), 0 0 28px rgba(10,132,255,0.12);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(10,132,255,0.55), 0 0 40px rgba(10,132,255,0.2);
+  }
+}
+
+/* V5.5: alert glow converted to monochrome white — no red in Deep Black. */
+@keyframes pin-glow-alert {
+  0%, 100% {
+    box-shadow: 0 0 12px rgba(255,255,255,0.18), 0 0 28px rgba(255,255,255,0.06);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(255,255,255,0.32), 0 0 44px rgba(255,255,255,0.1);
+  }
+}
+
+/* Pulse ring — subtle expanding ring for movement */
+@keyframes pulse-ring-subtle {
+  0% {
+    transform: scale(1);
+    opacity: 0.3;
+  }
+  100% {
+    transform: scale(2.5);
+    opacity: 0;
+  }
+}
+
+/* V5.5: arrival pulse — monochrome white glow (was green). */
+@keyframes arrival-pulse {
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes arrival-pin-glow {
+  0%, 100% {
+    box-shadow: 0 0 12px rgba(255,255,255,0.18), 0 0 28px rgba(255,255,255,0.06);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(255,255,255,0.32), 0 0 44px rgba(255,255,255,0.1);
+  }
+}
+
+/* Fade in down — top card */
+@keyframes fade-in-down {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-down {
+  animation: fade-in-down 0.3s ease-out;
+}
+
+/* Fade in up — bottom HUD */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out;
+}
+
+/* ════════════════════════════════════════════════════════════════ */
+/* MapLibre overrides — Apple Maps minimal dark theme               */
+/* ════════════════════════════════════════════════════════════════ */
+
+.maplibregl-map {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif !important;
+}
+
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
+  background: rgba(10, 10, 10, 0.85) !important;  /* V5.5 deep black */
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.05) !important;
+  border-radius: 12px !important;
+  box-shadow: none !important;
+}
+
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl-group button {
+  border-color: rgba(255,255,255,0.02) !important;
+  width: 32px !important;
+  height: 32px !important;
+}
+
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl-group button span {
+  filter: invert(1) opacity(0.15);
+}
+
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl-group button:hover {
+  background: rgba(255,255,255,0.04) !important;
+}
+
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl-group button:hover span {
+  filter: invert(1) opacity(0.35);
+}
+
+.maplibregl-ctrl-attrib {
+  display: none !important;
+}
+
+/* V5.5 Deep Black scrollbar — barely visible monochrome */
+.overflow-y-auto::-webkit-scrollbar {
+  width: 2px;
+}
+
+.overflow-y-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.05);
+  border-radius: 2px;
+}
+
+/* V5.5 Deep Black input placeholder */
+input::placeholder {
+  color: rgba(255,255,255,0.05) !important;
+}
+
+input:focus {
+  outline: none;
+}
+
+/* ════════════════════════════════════════════════════════════════ */
+/* T3 PREMIUM (stracker_v7_ui_evolution) — design system utilities   */
+/* ════════════════════════════════════════════════════════════════ */
+
+/* no-scrollbar — hide scrollbar but keep scroll (horizontal pill rows) */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* metrics-scroll — ultra-thin dark scrollbar for telemetry rows */
+.metrics-scroll {
+  scrollbar-width: none;
+}
+.metrics-scroll::-webkit-scrollbar {
+  height: 2px;
+  width: 2px;
+}
+.metrics-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.metrics-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.06);
+  border-radius: 2px;
+}
+
+/* V5.5: micro-telemetry — monochrome white at 50% (was zinc-400).
+   RA26: bumped 10px→11px for legibility (was unreadable on mobile). */
+.micro-telemetry {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 500;
+  color: rgba(255,255,255,0.5);
+}
+
+/* M8: skeleton-shimmer — blinking grey blocks replacing invasive spinner.
+   Used in metric pills while data loads. Eliminates jarring UI jumps. */
+@keyframes skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(63,63,70,0.4) 0%,
+    rgba(82,82,91,0.6) 50%,
+    rgba(63,63,70,0.4) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* V5.5: LED pulse — monochrome white. Severity is conveyed by pulse RATE
+   (calm 2.8s / warn 1.6s / critical 1.0s), not by color. The LED itself
+   is pure white so the dashboard stays monochrome; only the Apple-blue
+   location dot on the map carries color. */
+@keyframes led-pulse-calm {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 0.85; transform: scale(1.15); }
+}
+@keyframes led-pulse-warn {
+  0%, 100% { opacity: 0.55; transform: scale(0.9); }
+  50% { opacity: 0.95; transform: scale(1.2); }
+}
+@keyframes led-pulse-critical {
+  0%, 100% { opacity: 0.7; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.3); }
+}
+
+/* ════════════════════════════════════════════════════════════════ */
+/* V8 HYPER-PREMIUM (stracker_v8_hyper_premium) — design system        */
+/* ════════════════════════════════════════════════════════════════ */
+
+/* AT_2: heartbeat-ring — two quick beats + pause, synced to payload
+   arrival. Replays via React `key` bump on the DynamicIsland LED overlay. */
+@keyframes heartbeat-ring {
+  0%   { transform: scale(0.6); opacity: 0.9; }
+  14%  { transform: scale(1.4); opacity: 0.7; }
+  28%  { transform: scale(0.9); opacity: 0.85; }
+  42%  { transform: scale(1.8); opacity: 0; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+
+/* AT_2: heartbeat-badge — for the WS connection indicator dot. Same
+   cadence as heartbeat-ring so they feel synchronized. */
+@keyframes heartbeat-badge {
+  0%   { transform: scale(1); }
+  10%  { transform: scale(1.35); }
+  20%  { transform: scale(1); }
+  30%  { transform: scale(1.35); }
+  40%  { transform: scale(1); }
+  100% { transform: scale(1); }
+}
+
+/* T3-step2 (telemetry_lock): tabular-nums on all numeric telemetry so
+   lat/lng/speed/battery digits don't visually jump as values change.
+   Applied globally to .leaflet-container + [data-tabular] + .tabular-nums. */
+.leaflet-container,
+[data-tabular],
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* MC_8_01: Pseudo-3D Drive Mode — when drone follow is active AND speed
+   > 40km/h, the tile pane tilts into a Tesla/Apple Maps driving perspective.
+   Applied via a CSS var --drive-tilt (0 = flat, 1 = full 45° tilt) set on
+   the map wrapper by TrackerView. Marker pane stays flat (2D) so the pin
+   remains crisp. Transition is eased over 800ms for a cinematic engage. */
+.leaflet-tile-pane {
+  transform: perspective(1200px) rotateX(calc(var(--drive-tilt, 0) * 32deg));
+  transform-origin: center 80%;
+  transition: transform 800ms cubic-bezier(0.32, 0.72, 0, 1),
+              filter 300ms ease;
+}
+
+/* ════════════════════════════════════════════════════════════════ */
+/* V6.5 UI_VISUAL_RESET — native dark mode restored                    */
+/* ════════════════════════════════════════════════════════════════ */
+/* V6.4 applied invert(0.92) hue-rotate(180deg) to fake a dark map from
+   the light CartoDB tiles. V6.5 REMOVES that aggressive filter — the
+   map now uses the native dark CartoDB tiles (dark_all) directly, which
+   gives true deep blacks + high-contrast grays without the color-wonky
+   inversion artifacts. The tile-pane filter block is intentionally empty
+   here; the inline <style> in TrackerView also had the invert filter and
+   has been cleaned up to only carry blur+brightness (sheet-progress sync).
+   No CSS filter on .leaflet-tile-pane anymore. */
+
+/* V6.5 neonPinPulse — red pin halo. Color changed from neon green
+   (#00FF00) to bright red (#FF0000) per directive. The halo uses a soft
+   red (rgba(255,0,0,0.3) baseline) so the pulse reads as an alert beacon
+   without blowing out the map. Period 1.4s preserved. Three-layer halo
+   (14px + 28px + 56px) for depth + "impossible to lose" outer ring. */
+@keyframes neonPinPulse {
+  0%, 100% {
+    box-shadow: 0 0 14px rgba(255,0,0,0.85),
+                0 0 28px rgba(255,0,0,0.45),
+                0 0 56px rgba(255,0,0,0.20),
+                0 2px 8px rgba(0,0,0,0.6);
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(255,0,0,1),
+                0 0 44px rgba(255,0,0,0.65),
+                0 0 88px rgba(255,0,0,0.35),
+                0 2px 8px rgba(0,0,0,0.6);
+  }
+}
+/* When drive mode is active, also shift the overlay pane slightly to
+   reinforce the parallax (routes tilt with the road). */
+.leaflet-overlay-pane {
+  transform: perspective(1200px) rotateX(calc(var(--drive-tilt, 0) * 32deg));
+  transform-origin: center 80%;
+  transition: transform 800ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* AT_4: gesture-occlusion — when the user is panning/zooming the map,
+   floating UI dims to 0.25 opacity so the map gets maximum visual area.
+   TrackerView toggles a `map-gesture-active` class on <body>. */
+.map-gesture-active .gesture-dim {
+  opacity: 0.25 !important;
+  transition: opacity 180ms ease-out !important;
+}
+.gesture-dim {
+  transition: opacity 320ms ease-in 400ms;
+}
+
+/* V6.7 GHOST_TRAIL_VISIBILITY: glow color switched from pure white to blue
+   (rgba(59,130,246,.7)) to match the new #3b82f6 trail per directive
+   "color: '#3b82f6' para máxima visibilidad". The V6.5 white trail is
+   superseded — a blue trail reads more clearly against both the dark
+   CartoDB basemap and the ArcGIS satellite imagery. */
+.ghost-comet-head {
+  filter: drop-shadow(0 0 5px rgba(59, 130, 246, 0.7))
+          drop-shadow(0 0 12px rgba(59, 130, 246, 0.35));
+}
+
+/* LAYER_01 (stracker_v5.2_rev): Ghostrail layer z-index enforcement.
+   Leaflet panes: tilePane=200, overlayPane=400 (polylines), markerPane=600.
+   These rules explicitly enforce that the ghost trail (overlayPane) renders
+   above the tile layer and below the marker pane, and that the polyline
+   path has pointer-events disabled so it never blocks map interaction. */
+.leaflet-overlay-pane svg path.leaflet-interactive,
+.leaflet-overlay-pane path {
+  pointer-events: none !important;
+}
+.leaflet-pane.leaflet-tile-pane {
+  z-index: 200 !important;
+}
+.leaflet-pane.leaflet-overlay-pane {
+  z-index: 400 !important;
+}
+.leaflet-pane.leaflet-marker-pane {
+  z-index: 600 !important;
+}
+/* FIX_LAYER_03: ensure the LiveMarker pin (markerPane) always receives
+   pointer events. The overlay/tile panes must never block taps on the pin. */
+.leaflet-pane.leaflet-tile-pane,
+.leaflet-pane.leaflet-overlay-pane {
+  pointer-events: none !important;
+}
+.leaflet-marker-icon,
+.leaflet-pane.leaflet-marker-pane {
+  pointer-events: auto !important;
+}
+
+/* RA30 MOBILE_GHOST_TRAIL_RECOVERY + V6.4 GHOST_PERSISTENCE: ensure the
+   GhostTrail polyline is ALWAYS rendered on ALL breakpoints. The render
+   gate in TrackerView (ghostVisible && routedTrailPts.length >= 2) is
+   already decoupled from live signal — it renders purely on historical
+   data availability. This CSS is defensive insurance: even if a future
+   breakpoint rule or ancestor style hides the overlay pane, the GhostTrail
+   stays visible on mobile AND desktop. The trail must be visible "sí o sí"
+   per the directive — the map is never blind when the CSV history has
+   points within the 24h window. V6.4 lifts the previous mobile-only
+   media query to all viewports so desktop also gets the guarantee. */
+.leaflet-pane.leaflet-overlay-pane {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  z-index: 400 !important;
+}
+.leaflet-pane.leaflet-overlay-pane svg,
+.leaflet-pane.leaflet-overlay-pane svg path,
+.leaflet-pane.leaflet-overlay-pane path {
+  display: block !important;
+  visibility: visible !important;
+  pointer-events: none !important;
+}
+
+/* FIX_2 (stracker_hotfix_ui_v8.1): LiveMarker pin visibility hardening.
+   The LiveMarker divIcon uses this explicit className so that no inherited
+   `display:none` / `opacity:0` / `visibility:hidden` from any Leaflet pane
+   or ancestor can hide the target pin. The pin MUST always render on top. */
+/* FIX_1 (stracker_hotfix_ui_v8.2): explicit width/height/min-width so the
+   divIcon always has a paintable box even before the inline HTML injects. */
+.live-marker-pin {
+  display: block !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  background: transparent !important;
+  border: none !important;
+  width: 56px !important;
+  height: 56px !important;
+  min-width: 56px !important;
+  min-height: 56px !important;
+}
+.live-marker-pin > div {
+  display: flex !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* DynamicIsland entrance — subtle scale-in for first mount */
+@keyframes island-enter {
+  from { opacity: 0; transform: translateY(-8px) scale(0.94); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* V6.8 JITTER_AWARENESS_UI — activity pulse for the GPS Jitter badge.
+   Plays ONLY when the device is detected as in-place active (coordinates
+   fluctuating within <10m radius). The pulse cycle is 1.4s, matching the
+   Live Mode accent rhythm so the operator reads "active but static" at a
+   glance. Color: Apple blue (#0a84ff) to match the Live Mode indicator. */
+@keyframes v68JitterPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 6px rgba(10,132,255,0.7);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.7);
+    box-shadow: 0 0 10px rgba(10,132,255,0.9);
+  }
+}

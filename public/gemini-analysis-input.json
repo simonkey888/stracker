@@ -1,0 +1,468 @@
+{
+  "_meta": {
+    "doc": "STRACKER — Análisis completo para Gemini (input de roast/auditoría)",
+    "version": "V9-local (post Gemini roast T1-T6 ejecutado en local, SIN deploy)",
+    "analyst": "Z.ai Code",
+    "date": "2025-06-XX",
+    "objective": "Auditoría profunda de arquitectura, engines, UI, problemas actuales, soluciones y mejoras atómicas para estabilidad. Devolver como JSON estructurado con plan de ejecución atómico.",
+    "production_url": "https://strackerglm.onrender.com",
+    "repo": "https://github.com/simonkey888/stracker",
+    "deploy_target": "Render free tier (512MB RAM, sleeps after 15min inactivity)"
+  },
+
+  "architecture": {
+    "summary": "Tracker de ubicación en tiempo real (Google Maps Location Sharing) con motor de estado bayesiano, anti-spoof, GhostRail 24h con OSRM routing, y UI mapa-first estilo Apple/Uber Maps. 2 capas: backend Python monolítico (HTTP server + tracking loop + state engine) y frontend Next.js 16 (static export) servido por el mismo Python.",
+    "layers": [
+      {
+        "name": "L1 — RAW INGESTION",
+        "location": "stracker/tracker_map.py :: tracking_loop() :: _fetch_location()",
+        "desc": "Cada 20s hace HTTP request a Google Maps Location Sharing RPC (LOCATIONSHARING_URL) usando cookies cargadas de cookies.json. Parsea respuesta con regex (COORD_API_RE, BAT_API_RE, ACCURACY_RE, CHARGE_RE). Fallback a scraping HTML de GMAPS_SHARE_URL si RPC falla."
+      },
+      {
+        "name": "L2 — STATE ENGINE",
+        "location": "stracker/tracker_map.py :: build_state() + normalize_state()",
+        "desc": "Pipeline determinista+probabilístico de 11 pasos: movement(EMA+ghost fix) → zone(POI) → place+since → network inference → anti-spoof bayesian → activity score → screen state → proximity → ghostrail → events FIFO → canonical state. Single source of truth = state object."
+      },
+      {
+        "name": "L3 — UI RENDERER",
+        "location": "src/components/tracker/TrackerView.tsx (2337 líneas) + 4 subcomponentes",
+        "desc": "Frontend dumb: render(state) ONLY. Zero lógica de inferencia post-CA1 (spoof ya viene del backend). Polling HTTP adaptativo 3s/10s. Leaflet mapa-first con bottom sheet (mobile) / left panel (desktop)."
+      }
+    ],
+    "data_flow": "Google RPC → cookies.json → tracking_loop (20s) → _fetch_location → compute_telemetry → append_csv → normalize_state → _PREV_STATE (global) → HTTP /points → Next.js API /api/points (transform) → TrackerView fetch → setSnapshot → React render",
+    "csv_canonical": "historial.csv es la ÚNICA fuente de verdad para GhostRail. 24h strict window. Cada fila: timestamp, lat, lng, speed_kmh, heading, movement_state, address, accuracy. _rebuild_ghostrail_from_csv() se ejecuta en cada build_state()."
+  },
+
+  "stack": {
+    "frontend": {
+      "framework": "Next.js 16 (App Router) en modo static export (output: 'export' cuando BUILD_EXPORT=1)",
+      "language": "TypeScript 5 strict",
+      "styling": "Tailwind CSS 4 + inline styles (glass morphism rgba(9,9,11,.7) + backdrop-blur 48px saturate 180%)",
+      "map": "react-leaflet 5.0.0 + leaflet 1.9.4 (dynamic import, ssr:false)",
+      "animation": "framer-motion 12.23.2 (TrackerSheet spring physics)",
+      "icons": "lucide-react 0.525 (Layers, Crosshair, Eye, EyeOff en FloatingControls)",
+      "available_unused": "vaul 1.1.2 (instalado pero NO usado — TrackerSheet usa framer-motion custom), socket.io-client 4.8.3 (NO hay WS real, wsConnected es flag de HTTP)"
+    },
+    "backend": {
+      "language": "Python 3 (stdlib only: http.server, csv, json, urllib, re, threading, sqlite3 condicional)",
+      "server": "ThreadingHTTPServer con _ReusableThreadingHTTPServer (allow_reuse_address, daemon_threads)",
+      "port": "8765 por defecto con fallbacks [8765,8766,8767,8768,8769,8770]. Render usa PORT env var. Dev proxy usa 3003 ( hardcoded en next.config.ts rewrites + /api/points route).",
+      "playwright": "Opcional (SKIP_PLAYWRIGHT env var). 3 métodos de refresh de cookies: SQLite direct, CDP, headless. En Render free tier NO viable (no Chrome persistente, 512MB RAM)."
+    },
+    "deploy": {
+      "platform": "Render free tier (web service)",
+      "build": "BUILD_EXPORT=1 next build → cp out/ → stracker/nextjs-ui/. Python tracker sirve nextjs-ui/index.html en / y /_next/static/* cacheado immutable.",
+      "cookies": "stracker/cookies.json — 22 cookies Google frescas. Import manual vía POST /api/cookies (auto-detect JSON/Header/Netscape). Auto-refresh playwright DESACTIVADO en producción (SKIP_PLAYWRIGHT=1)."
+    }
+  },
+
+  "engines": {
+    "state_engine": {
+      "location": "tracker_map.py build_state() L847-1019",
+      "pipeline_11_steps": [
+        "1. MOVEMENT: _classify_motion (EMA alpha=0.7, ghost speed fix variance<0.15→speed=0)",
+        "2. ZONE: _classify_zone (POI HOME>WORK>TRANSIT>IDLE, radio 150m)",
+        "3. PLACE: _compute_place (zone>geofence>address>reverse_geocode>TRANSIT>fallback)",
+        "4. SINCE_SEC: _compute_since_sec (reset on zone change, +POLL_INTERVAL otherwise)",
+        "5. NETWORK: _infer_network_type (accuracy+speed → WIFI/5G/4G/UNKNOWN)",
+        "6. SIGNAL: _compute_signal_quality (accuracy <15 GOOD, <50 WEAK, else NO_SIGNAL)",
+        "7. SPOOF: _detect_spoof bayesian (6 señales, weights sum 100, level mapping CA1)",
+        "8. ACTIVITY: _compute_activity_score (40%mov+25%zone+20%stab+15%device) → LOW/MID/HIGH",
+        "9. SCREEN: _infer_screen_state (ON si updates<30s o mode!=STATIC)",
+        "10. PROXIMITY: _compute_proximity (CAR 300m→APPROACHING, 200m→ARRIVED; WALK 200m)",
+        "11. GHOSTRAIL: _rebuild_ghostrail_from_csv (24h strict, zone clusters, last 5 transitions)"
+      ],
+      "canonical_state_keys": ["meta", "location", "movement", "activity", "network", "device", "spoof{risk,label,level,signals}", "proximity", "ghostrail{enabled,points_24h,last_zones,timeline_active}", "events", "_internal{motion_speed_smooth,speed_history,zone}", "ui{rendered_place,last_zone_change_ts}"]
+    },
+
+    "spoof_engine": {
+      "location": "tracker_map.py _detect_spoof() L652-733",
+      "type": "Bayesian additive risk scoring (0-100)",
+      "signals": [
+        {"name": "impossible_speed", "weight": 30, "trigger": "dist>2000m AND speed<5km/h"},
+        {"name": "large_jump", "weight": 21, "trigger": "dist>500m AND speed<2km/h"},
+        {"name": "extreme_accel", "weight": 15, "trigger": "prev_speed<2 AND speed>60"},
+        {"name": "accel_jump", "weight": 10.5, "trigger": "|speed-prev_speed|>50"},
+        {"name": "jitter_high", "weight": 20, "trigger": "accuracy>200m"},
+        {"name": "jitter_med", "weight": 10, "trigger": "accuracy>100m"},
+        {"name": "low_stability", "weight": 6, "trigger": "stability<0.3"},
+        {"name": "precision_anomalous", "weight": 15, "trigger": "accuracy<=30 AND speed>40 (GPS preciso pero vel alta = sospechoso)"},
+        {"name": "zone_jump", "weight": 15, "trigger": "HOME→WORK con prev_speed<3 (teletransporte)"},
+        {"name": "pattern_anomaly", "weight": 5, "trigger": "dist<1m AND speed>0 (GPS congelado fake)"}
+      ],
+      "level_mapping": "risk>=75 spoof_detected (🔴) | >=50 suspicious (🟠) | >=25 warning (🟡) | else trusted (🟢)",
+      "ca1_status": "APLICADO — frontend mapSpoofFromBackend() (30 líneas) consume state.spoof.level+signals directo. Eliminado deriveSpoofLevel() (80 líneas, 8 señales duplicadas). Single source of truth = backend."
+    },
+
+    "ghostrail_engine": {
+      "location": "tracker_map.py _rebuild_ghostrail_from_csv() L761-837 + frontend useRoutedTrail() L353-431",
+      "version": "V7",
+      "backend": "CSV = canonical. 24h strict window (cutoff = now - 24h). Cada punto DEBE tener timestamp ISO válido. Sort por t. Zone clusters (last 5 transitions con minutos). Sin cap de puntos (24h es el límite).",
+      "frontend_transform": "src/app/api/points/route.ts filterGhostrail24h() — re-filtro 24h defensivo + rebuildGhostrailFromCsvPoints() compat legacy.",
+      "frontend_render": "TrackerView useMemo ghostrailPts (validation + spatial dedup 5m + localStorage cache rescue). useRoutedTrail() rutea segmento-por-segmento vía /osrm-route. GhostTrail component renderiza 2-8 segmentos Polyline con age-based opacity (0.15→1.0) y weight (2.0→4.0).",
+      "osrm": "router.project-osrm.org (público, demo). Fallback recta si fail. Skip routing si dist<20m."
+    },
+
+    "cookie_engine": {
+      "location": "tracker_map.py CookieEngine class L1398-1502 + _normalize_cookie_input() L1082-1200 + TrackerHandler._handle_cookies_upload/status L2355-2453",
+      "critical_keys": ["SID", "HSID", "SSID", "SAPISID", "__Secure-3PSID"],
+      "health_check": "CHECK_INTERVAL 300s. _are_cookies_expired() chequea si critical keys expiran en <24h. AUTO-HEAL via Playwright si disponible (NO en Render).",
+      "import_flow": "POST /api/cookies con {format:'auto', data:raw}. _normalize_cookie_input parsea JSON (Cookie Editor) / Header String / Netscape cookies.txt. Filtra google.com. Backup .bak. Valida critical keys. Retorna {count, missing_critical, has_critical, more_complete, gained, lost, min/max_expiration}.",
+      "t4_status": "APLICADO — CookiesBlock frontend con auto-detect clipboard (navigator.clipboard.readText en window focus), parser predictivo looksLikeCookies(), auto-POST silencioso, TTL countdown bar green→red (7d window), poll status cada 2min."
+    },
+
+    "osrm_engine": {
+      "location": "tracker_map.py _handle_osrm_route() L2131-2200 + src/app/api/osrm-route/route.ts",
+      "duplicate": "DUPLICADO — mismo código en Python (backend producción) y TypeScript (Next.js API route para dev). En dev, next.config.ts rewrite proxy /osrm-route → :3003. En producción, Python sirve /osrm-route directo. La API route TS solo se usa si Python caído (multi_fallback).",
+      "endpoint": "https://router.project-osrm.org/route/v1/driving/{coords}?overview=full&geometries=geojson",
+      "timeout": "8s",
+      "fallback": "straight line (routed:false) si OSRM fail o dist<20m"
+    },
+
+    "polling_engine": {
+      "location": "TrackerView.tsx L1411-1458",
+      "ca3_status": "APLICADO — intervalo adaptativo: 3s cuando wsConnected=false, 10s cuando wsConnected=true. NO mata polling tras success (bug original).",
+      "wsConnected_truth": "NO es WebSocket real. Es un flag que indica 'último fetch HTTP a /points fue ok'. Nombre misleading.",
+      "risk": "En Render free tier (sleeps 15min), si app despierta y backend Python aún no responde, el cliente hace fetch cada 3s (rápido). Una vez conecta, baja a 10s. Aceptable pero NO óptimo — podría usar backoff exponencial o ETag/If-Modified-Since."
+    }
+  },
+
+  "ui": {
+    "components": [
+      {
+        "name": "TrackerView.tsx",
+        "lines": 2337,
+        "role": "Master component. Mapa Leaflet + polling + todos los derivadores (movement/screen/network/place) + render del StateChip/FloatingControls/TrackerSheet/VER MÁS accordion.",
+        "complexity": "ALTA — 1 useEffect por cada cosa: polling, resize, showVerMas toggle, cookiesExpanded toggle, sheetSnap change, mapReady, pin center lock. 23 estados useState."
+      },
+      {
+        "name": "TrackerSheet.tsx",
+        "lines": 174,
+        "role": "Bottom sheet mobile (snap points closed 5.5%/half 45%/full 88%) o left panel desktop (380px fixed). Spring physics framer-motion (stiffness 320, damping 28, mass 0.8). Drag handle touch. onProgressChange para backdrop blur sync.",
+        "dependency": "framer-motion. NO usa vaul (aunque está instalado)."
+      },
+      {
+        "name": "StateChip.tsx",
+        "lines": 106,
+        "role": "Pill glass top-center Uber-style. [pulse-dot spoof-color] [movement-icon] [movement-label] | [place zone]. pointer-events-none."
+      },
+      {
+        "name": "FloatingControls.tsx",
+        "lines": 102,
+        "role": "3 botones circulares glass top-right: Layers (satellite toggle), Crosshair (center on pin), Eye/EyeOff (GhostRail toggle). Lucide icons."
+      },
+      {
+        "name": "CookiesBlock.tsx",
+        "lines": 510,
+        "role": "Collapsed row [🔑, 23🍪, estado, ▾] + TTL bar. Expanded: textarea + IMPORTAR + auto-detect hint. window.focus listener + clipboard.readText."
+      }
+    ],
+    "layout_strategy": "Mapa-first. Mobile: mapa full-screen + bottom sheet (snap). Desktop: mapa full-screen + left panel 380px + pin offset 192px derecha (panToWithOffset usa latLngToContainerPoint/containerPointToLatLng). Pin NUNCA tapado (invariante verificado 8 viewports).",
+    "responsive_breakpoints": "mobile <768 | tablet 768-1024 | desktop >=1024 | short <360w OR <600h",
+    "short_viewport_handling": "Cookies colapsado forzado, VER MÁS hidden, bottom offset 80px (vs 110px normal mobile, 60px desktop)."
+  },
+
+  "current_problems": [
+    {
+      "id": "P1",
+      "severity": "ALTA",
+      "title": "generate_html() es DEAD CODE funcional pero CPU waste ACTIVO",
+      "location": "tracker_map.py L1631-2080 (450 líneas) + calls en L1583 (cada poll) y L2558 (startup)",
+      "evidence": "Genera mapa.html (HTML_PATH) con Leaflet+CSS+JS embebido. En producción se sirve nextjs-ui/index.html (TrackerHandler L2283). mapa.html SOLO se sirve si nextjs-ui/index.html NO existe (fallback L2287 → 302 redirect /mapa.html). Cada 20s se regenera 450 líneas de HTML que nadie lee.",
+      "impact": "CPU waste en Render free tier (512MB RAM, CPU shared). Cada poll: compute_stats + read_all_points + generate_html + _rebuild_ghostrail_from_csv (dentro de build_state). 4 pases de CSV por poll.",
+      "fix": "Eliminar generate_html() + calls. Guardar función en git history. Si se necesita fallback, regenerar mapa.html solo en startup (no cada poll)."
+    },
+    {
+      "id": "P2",
+      "severity": "ALTA",
+      "title": "Backend Python caído en dev (ECONNREFUSED :3003)",
+      "location": "dev.log tail — 'Failed to proxy http://127.0.0.1:3003/points Error: connect ECONNREFUSED'",
+      "evidence": "next.config.ts rewrites proxy /points, /osrm-route, /api/cookies* → 127.0.0.1:3003. Pero tracker_map.py default port es 8765 (HTTP_PORT = int(os.environ.get('PORT', 8765))). NO hay proceso escuchando 3003.",
+      "impact": "Dev server Next.js corre pero no hay datos. Frontend muestra loading/empty state. No se puede probar UI con datos reales localmente sin levantar Python en 3003 manualmente.",
+      "fix": "Opción A: setear PORT=3003 en env de dev Python. Opción B: cambiar next.config.ts rewrites a 8765. Opción C: arrancar Python tracker como mini-service en 3003."
+    },
+    {
+      "id": "P3",
+      "severity": "MEDIA",
+      "title": "wsConnected es flag HTTP, no WebSocket real (naming misleading)",
+      "location": "TrackerView.tsx L1113, L1440, L1456, L1998-1999, L2215-2216, L2303",
+      "evidence": "setWsConnected(true) se llama tras fetch('/points') ok. NO hay io() ni new WebSocket() en todo el codebase. socket.io-client instalado pero sin usar.",
+      "impact": "Nombre confunde. CA3 menciona 'short-circuit when WS connected' pero no hay WS. El flag indica 'HTTP vivo'. No es bug funcional pero el polling adaptativo podría ser mejor con WS real (push en vez de poll).",
+      "fix": "Renombrar a httpAlive, o implementar WS real con socket.io en Python (no trivial). Para Render free tier, polling adaptativo es aceptable."
+    },
+    {
+      "id": "P4",
+      "severity": "MEDIA",
+      "title": "Duplicación código OSRM (Python + TypeScript)",
+      "location": "tracker_map.py _handle_osrm_route() L2131-2200 + src/app/api/osrm-route/route.ts (107 líneas)",
+      "evidence": "Ambos implementan mismo parser coords, mismo OSRM call, mismo fallback recta, mismo skip <20m. TS route solo se usa si Python caído (multi_fallback en /api/points) — pero /api/osrm-route NO tiene multi_fallback, solo llama a OSRM directo.",
+      "impact": "2 fuentes de verdad. Bug en uno no se propaga al otro. Mantenimiento doble.",
+      "fix": "En producción Python sirve /osrm-route. En dev, next.config.ts rewrite proxy a Python. La API route TS es redundante — eliminar o usarla como único camino (Python solo proxy)."
+    },
+    {
+      "id": "P5",
+      "severity": "MEDIA",
+      "title": "TrackerView.tsx 2337 líneas — God Component",
+      "location": "src/components/tracker/TrackerView.tsx",
+      "evidence": "23 useState, 1 useRef por estado, 8+ useEffect, todos los derivadores (deriveMovementMode 116 líneas, deriveScreenState 121 líneas, deriveNetwork 38 líneas, derivePlaceBadge 146 líneas) inline. Mapa + sheet + chips + controls + VER MÁS + cookies + eventos todo en un archivo.",
+      "impact": "Difícil testear, difícil aislar bugs, re-renders costosos (cualquier state change re-renderiza todo).",
+      "fix": "Extraer hooks: useTrackerPolling, useGhostrail, useViewport, usePinCenter. Extraer derivadores a lib/derive.ts. Mover VER MÁS a componente aparte. Meta: <800 líneas."
+    },
+    {
+      "id": "P6",
+      "severity": "MEDIA",
+      "title": "4 pases de CSV por poll (CPU + IO)",
+      "location": "tracker_map.py tracking_loop L1581-1583 + build_state → _rebuild_ghostrail_from_csv",
+      "evidence": "Por poll: (1) read_all_points() para points, (2) compute_stats(points), (3) generate_html(points, stats) [P1 dead code], (4) _rebuild_ghostrail_from_csv() dentro de build_state. Cada uno abre+lee CSV completo.",
+      "impact": "Con CSV de 24h (~4320 filas a 20s intervalo), cada poll lee 4×4320 = 17280 filas. En Render free tier CPU, latencia visible.",
+      "fix": "Cache: leer CSV una vez, computar points+stats+ghostrail juntos, guardar en _PREV_STATE o cache separado. Solo re-leer si CSV mtime cambió."
+    },
+    {
+      "id": "P7",
+      "severity": "BAJA",
+      "title": "vaul instalado pero NO usado",
+      "location": "package.json L84 \"vaul\": \"^1.1.2\" | TrackerSheet.tsx usa framer-motion custom",
+      "evidence": "TrackerSheet implementa snap points manual con framer-motion (handleTouchStart/Move/End + cycleSnap). vaul tendría snap points nativos, drag-to-close, accessible.",
+      "impact": "Bundle size +~20KB. Maintenibilidad: código custom más propenso a bugs touch que vaul testeado.",
+      "fix": "O migrar a vaul (mejor UX touch), o desinstalar vaul (reducir bundle). Decidir."
+    },
+    {
+      "id": "P8",
+      "severity": "BAJA",
+      "title": "No hay WebSocket real — polling cada 3s/10s puede dar latencia hasta 10s",
+      "location": "TrackerView.tsx L1456",
+      "evidence": "setInterval(poll, wsConnected ? 10000 : 3000). En producción con cookies válidas y Google respondiendo cada 20s, poll 10s es suficiente. Pero si Google tarda más o hay lag, el usuario ve datos con hasta 10s de retraso además del poll de Google.",
+      "impact": "Para tracking en vivo (auto en movimiento), 10s es perceptible pero aceptable. Para alertas (arrival, spoof), 10s es lento.",
+      "fix": "WS push desde Python cuando _PREV_STATE cambie (evento). Frontend cae a polling solo si WS cae. Pero en Render free tier con sleeps, WS se rompe al dormir — complejo."
+    },
+    {
+      "id": "P9",
+      "severity": "BAJA",
+      "title": "Spoof signals no persisten entre restarts",
+      "location": "tracker_map.py _detect_spoof() — depende de prev_state (global _PREV_STATE, en memoria)",
+      "evidence": "Si Python restart (Render sleep + wake, o crash), _PREV_STATE=None. Primer poll: spoof retorna trusted (no hay prev). Segundo poll: ya hay prev. Zona jump impossible_speed etc. no detectan hasta 2 polls después de restart.",
+      "impact": "Window de 20-40s post-restart sin spoof detection. Aceptable pero documentar.",
+      "fix": "Persistir _PREV_STATE en disco (state.json) en cada poll. Cargar en startup. También persistir speed_history."
+    },
+    {
+      "id": "P10",
+      "severity": "BAJA",
+      "title": "Nominatim reverse geocode sin rate limit explícito",
+      "location": "tracker_map.py _reverse_geocode_cached() L516-544",
+      "evidence": "Cache por (lat,lng) redondeado a 4 decimales (~11m). Pero si sujeto se mueve mucho (en auto), cada poll genera nuevo cache miss → request Nominatim. Nominatim policy: 1 req/s. Sin sleep entre calls.",
+      "impact": "Si Google RPC no trae address y sujeto en auto a 50km/h, 20s = 280m = nuevo cache miss cada poll. Nominatim puede banear IP.",
+      "fix": "Rate limiter global (1 req/s). O skip reverse geocode si speed>10 (usar 'En ruta'). O usar OpenStreetMap self-hosted."
+    }
+  ],
+
+  "possible_solutions": [
+    {
+      "id": "S1",
+      "problem_refs": ["P1", "P6"],
+      "title": "Eliminar generate_html + unificar lectura CSV en cache",
+      "approach": "1. Borrar generate_html() (450 líneas) + calls en tracking_loop L1583 y main L2558. 2. Crear _CSV_CACHE = {mtime, points, stats, ghostrail}. Función get_csv_data() que lee CSV solo si mtime cambió. 3. build_state usa get_csv_data(). 4. /points usa get_csv_data(). 5. compute_stats solo si points cambiaron.",
+      "risk": "BAJO — generate_html no se sirve en prod. CSV cache: si mtime check correcto, idempotente.",
+      "effort": "2 horas",
+      "verifiable": "curl /points antes/después — mismo JSON. Render CPU metrics bajan. dev.log sin errores."
+    },
+    {
+      "id": "S2",
+      "problem_refs": ["P2"],
+      "title": "Levantar Python tracker en puerto 3003 para dev",
+      "approach": "Opción A: PORT=3003 python stracker/tracker_map.py (con SKIP_PLAYWRIGHT=1). Opción B: mini-service en mini-services/tracker-service/ que wrapper Python. Opción C: cambiar next.config.ts rewrites a 8765.",
+      "recommendation": "Opción A — más simple. Agregar a start-dev.sh: 'PORT=3003 SKIP_PLAYWRIGHT=1 TRACKER_SKIP_PLAYWRIGHT=1 python3 stracker/tracker_map.py &'",
+      "risk": "BAJO",
+      "effort": "15 min"
+    },
+    {
+      "id": "S3",
+      "problem_refs": ["P3", "P8"],
+      "title": "Decisión: renombrar wsConnected → httpAlive, o implementar WS real",
+      "approach": "Opción A (rename): grep replace wsConnected→httpAlive en TrackerView.tsx. 5 min. Opción B (WS real): añadir socket.io a Python tracker (paquete python-socket.io), emit 'state' en cada poll, frontend io('/?XTransformPort=3003') on('state', setSnapshot). Polling cae a 60s como heartbeat.",
+      "recommendation": "Opción A ahora (claridad). Opción B más adelante si latencia 10s molesta. En Render free tier WS se rompe al dormir (15min) — frontend debe reconectar con backoff.",
+      "risk": "A: trivial. B: MEDIO — Python threading + socket.io async, Render sleep rompe conexión.",
+      "effort": "A: 5 min. B: 1 día."
+    },
+    {
+      "id": "S4",
+      "problem_refs": ["P4"],
+      "title": "Unificar OSRM — Python como único fuente, TS route elimina o proxy",
+      "approach": "Eliminar src/app/api/osrm-route/route.ts. En dev, next.config.ts ya rewrite /osrm-route → :3003. En prod, Python sirve /osrm-route. Frontend fetch('/osrm-route?...') funciona en ambos.",
+      "risk": "BAJO — next.config.ts rewrite ya existe. Solo borrar TS route.",
+      "effort": "10 min",
+      "caveat": "Si Python caído en dev, /osrm-route 404. Aceptable (dev no prod)."
+    },
+    {
+      "id": "S5",
+      "problem_refs": ["P5"],
+      "title": "Refactor TrackerView — extraer hooks y derivadores",
+      "approach": "Fase 1: mover deriveMovementMode, deriveScreenState, deriveNetwork, derivePlaceBadge a src/lib/tracker-derive.ts (puro functions, testables). Fase 2: extraer useTrackerPolling() hook (poll + wsConnected state). Fase 3: extraer useGhostrail(rawPts) hook (validation + dedup + cache). Fase 4: extraer <VerMasAccordion/> componente. Meta: TrackerView <800 líneas.",
+      "risk": "MEDIO — refactor grande. Debe hacerse con tests visuales en 8 viewports después de cada fase.",
+      "effort": "1-2 días",
+      "phases": "Atómico — cada fase independiente, deployable."
+    },
+    {
+      "id": "S6",
+      "problem_refs": ["P7"],
+      "title": "Decidir vaul: migrar o desinstalar",
+      "approach": "Opción A (migrar): TrackerSheet reescribe con vaul. Snap points [0.05, 0.35, 0.85]. Ventajas: drag-to-close nativo, accessibility, RTL. Opción B (desinstalar): bun remove vaul. TrackerSheet actual con framer-motion queda.",
+      "recommendation": "A — vaul tiene mejor UX touch (momentum, dismissal). Pero requiere re-test 8 viewports.",
+      "risk": "MEDIO (A) — touch behavior cambia. BAJO (B).",
+      "effort": "A: 2-3h. B: 5 min."
+    },
+    {
+      "id": "S7",
+      "problem_refs": ["P9"],
+      "title": "Persistir _PREV_STATE en disco",
+      "approach": "En tracking_loop, después de normalize_state, escribir _PREV_STATE a state.json (sin _internal). En startup, cargar state.json si existe. speed_history se persiste también.",
+      "risk": "BAJO — state.json es cache, si se borra arranca limpio.",
+      "effort": "30 min"
+    },
+    {
+      "id": "S8",
+      "problem_refs": ["P10"],
+      "title": "Rate limiter Nominatim + skip si speed>10",
+      "approach": "Global _NOMINATIM_LAST_CALL_TS. Si now - last < 1.1s, return ''. Además, si speed_kmh > 10, no llamar Nominatim (place='En ruta' ya viene de _compute_place).",
+      "risk": "BAJO",
+      "effort": "20 min"
+    }
+  ],
+
+  "atomic_improvements": [
+    {
+      "id": "A1",
+      "priority": 1,
+      "title": "Eliminar generate_html() + calls (P1)",
+      "files": ["stracker/tracker_map.py (delete L1631-2080, remove call L1583, remove call L2558)"],
+      "lines_changed": "-452",
+      "risk": "MINIMO",
+      "verification": "curl /points igual. Render CPU baja. /mapa.html 302→404 (esperado, no se usa)."
+    },
+    {
+      "id": "A2",
+      "priority": 1,
+      "title": "CSV cache unificado (P6)",
+      "files": ["stracker/tracker_map.py (add _CSV_CACHE global + get_csv_data() function, refactor tracking_loop + build_state + _handle_points)"],
+      "lines_changed": "+40 -30",
+      "risk": "BAJO",
+      "verification": "Poll time medible con time.time() antes/después. Misma respuesta /points."
+    },
+    {
+      "id": "A3",
+      "priority": 2,
+      "title": "Levantar Python tracker en 3003 para dev (P2)",
+      "files": ["start-dev.sh (add: PORT=3003 SKIP_PLAYWRIGHT=1 python3 stracker/tracker_map.py &)"],
+      "lines_changed": "+2",
+      "risk": "MINIMO",
+      "verification": "curl http://127.0.0.1:3003/health → 200. dev.log sin ECONNREFUSED."
+    },
+    {
+      "id": "A4",
+      "priority": 2,
+      "title": "Renombrar wsConnected → httpAlive (P3)",
+      "files": ["src/components/tracker/TrackerView.tsx (grep replace, 8 ocurrencias)"],
+      "lines_changed": "8 lines",
+      "risk": "MINIMO",
+      "verification": "lint ok, UI igual, badge muestra httpAlive correctly."
+    },
+    {
+      "id": "A5",
+      "priority": 3,
+      "title": "Eliminar src/app/api/osrm-route/route.ts (P4)",
+      "files": ["src/app/api/osrm-route/route.ts (delete)"],
+      "lines_changed": "-107",
+      "risk": "BAJO — next.config.ts rewrite ya proxy a Python.",
+      "verification": "fetch('/osrm-route?coords=...') sigue funcionando via rewrite."
+    },
+    {
+      "id": "A6",
+      "priority": 3,
+      "title": "Rate limiter Nominatim (P10)",
+      "files": ["stracker/tracker_map.py _reverse_geocode_cached()"],
+      "lines_changed": "+8",
+      "risk": "MINIMO",
+      "verification": "Si speed>10, no llama Nominatim. Si <1s desde última call, return ''."
+    },
+    {
+      "id": "A7",
+      "priority": 3,
+      "title": "Persistir _PREV_STATE en state.json (P9)",
+      "files": ["stracker/tracker_map.py (add _save_state() + _load_state() en startup)"],
+      "lines_changed": "+25",
+      "risk": "BAJO",
+      "verification": "Restart Python → spoof detection activa desde poll #1."
+    },
+    {
+      "id": "A8",
+      "priority": 4,
+      "title": "Extraer derivadores a lib/tracker-derive.ts (P5 fase 1)",
+      "files": ["src/lib/tracker-derive.ts (new), src/components/tracker/TrackerView.tsx (remove inline)"],
+      "lines_changed": "+420 -420 (movimiento)",
+      "risk": "BAJO — pure functions, sin state.",
+      "verification": "lint ok, UI igual en 8 viewports."
+    },
+    {
+      "id": "A9",
+      "priority": 4,
+      "title": "Extraer useTrackerPolling hook (P5 fase 2)",
+      "files": ["src/hooks/use-tracker-polling.ts (new), src/components/tracker/TrackerView.tsx (use hook)"],
+      "lines_changed": "+60 -40",
+      "risk": "MEDIO — useEffect dependency array debe replicarse exacto.",
+      "verification": "Polling behavior idéntico. wsConnected/httpAlive transiciones igual."
+    },
+    {
+      "id": "A10",
+      "priority": 5,
+      "title": "Decidir vaul: migrar TrackerSheet (S6-A) o desinstalar (S6-B)",
+      "files": ["src/components/tracker/TrackerSheet.tsx (rewrite or no change), package.json (bun remove vaul if B)"],
+      "lines_changed": "A: +80 -100. B: -1",
+      "risk": "A: MEDIO. B: MINIMO.",
+      "verification": "8 viewports. Drag touch en mobile. Snap points funcionan."
+    }
+  ],
+
+  "verification_matrix": [
+    {"viewport": "320×568 (iPhone SE)", "pin_visible": true, "sheet_no_cover": true, "h_scroll": false, "ghostrail": "V7 OK"},
+    {"viewport": "360×640 (Android small)", "pin_visible": true, "sheet_no_cover": true, "h_scroll": false, "ghostrail": "V7 OK"},
+    {"viewport": "375×812 (iPhone 13)", "pin_visible": true, "sheet_no_cover": true, "h_scroll": false, "ghostrail": "V7 OK"},
+    {"viewport": "390×844 (iPhone 14)", "pin_visible": true, "sheet_no_cover": true, "h_scroll": false, "ghostrail": "V7 OK"},
+    {"viewport": "414×896 (iPhone Plus)", "pin_visible": true, "sheet_no_cover": true, "h_scroll": false, "ghostrail": "V7 OK"},
+    {"viewport": "768×1024 (tablet)", "pin_visible": true, "sheet_no_cover": true, "h_scroll": false, "ghostrail": "V7 OK"},
+    {"viewport": "1366×768 (laptop)", "pin_visible": true, "sheet_no_cover": true, "h_scroll": false, "ghostrail": "V7 OK"},
+    {"viewport": "1920×1080 (desktop)", "pin_visible": true, "sheet_no_cover": true, "h_scroll": false, "ghostrail": "V7 OK"}
+  ],
+
+  "post_gemini_roast_status": {
+    "applied_locally_not_deployed": [
+      "CA1 — Spoof engine unificado (backend single source, frontend mapSpoofFromBackend)",
+      "CA2 — Backend declarative router (ROUTES map en TrackerHandler)",
+      "CA3 — Polling adaptativo 3s/10s (no mata polling tras success)",
+      "T3 — UI mapa-first: StateChip + FloatingControls + TrackerSheet (bottom mobile / left panel desktop)",
+      "T4 — Cookies manual_painless: clipboard auto-detect + predictive parse + TTL bar",
+      "T5 — 5 magias: backdrop blur sheet-sync, spring physics, haptics, accuracy pulse, ghostrail fade"
+    ],
+    "production_state": "V9 deployed (commit 3d80756). Los cambios CA1/T3/T4/T5 están en LOCAL (sin deploy). Production corre V9 sin Gemini roast aplicado.",
+    "deploy_pending": "FASE 5 del plan previo: push CA1+T3+T4+T5 a GitHub + Render. Verificar 8 viewports en producción."
+  },
+
+  "questions_for_gemini": [
+    "1. ¿generate_html() se puede eliminar seguro? ¿Hay algún edge case donde mapa.html se sirva en producción (ej. nextjs-ui/index.html corrupto)?",
+    "2. ¿El CSV cache (A2) debe invalidar también si _PREV_STATE es None (restart) para forzar re-leer?",
+    "3. ¿Migrar a vaul (S6-A) vale la pena vs quedarse con framer-motion custom? ¿vaul maneja bien safe-area-inset-bottom en iOS?",
+    "4. ¿Para WS real (S3-B), socket.io en Python con ThreadingHTTPServer — hay conflictos? ¿Mejor usar aiohttp o quart?",
+    "5. ¿El spoof engine debería persistir speed_history en disco (A7) o solo _PREV_STATE? ¿20 puntos de history bastan para variance?",
+    "6. ¿Rate limiter Nominatim (A6) — mejor skip total si speed>10, o async con queue? ¿Queue puede starvar si mucho movimiento?",
+    "7. ¿Refactor TrackerView (S5) — vale la pena dado que funciona? ¿O es over-engineering para app de 1 usuario?",
+    "8. ¿Render free tier sleep (15min) — debería el frontend mostrar 'backend durmiendo, reintentando' en vez de spinner eterno?",
+    "9. ¿Cookies auto-refresh en Render — hay ALGUNA forma viable sin Playwright? ¿CDP a Chrome remoto? ¿Extension Chrome del user que POSTea cookies?",
+    "10. ¿OSRM público (router.project-osrm.org) — rate limit? ¿Self-host OSRM en Render viable (512MB)?"
+  ],
+
+  "execution_plan_proposed": {
+    "phase_1_quirugico_safe": ["A1 (generate_html)", "A2 (CSV cache)", "A3 (Python 3003 dev)", "A6 (Nominatim rate limit)"],
+    "phase_2_refactor_motor": ["A4 (rename httpAlive)", "A5 (del OSRM TS route)", "A7 (persist state.json)"],
+    "phase_3_ui_polish": ["A8 (extract derivadores)", "A9 (useTrackerPolling hook)", "A10 (vaul decision)"],
+    "phase_4_deploy_verify": ["Push GitHub", "Render deploy", "Agent Browser 8 viewports producción", "Verificar invariantes: pin visible, sheet snappea, no scroll horizontal, ghostrail intacto, cookies importan"],
+    "estimated_total_effort": "2-3 días (sin A10 migrar vaul) / 3-4 días (con vaul)"
+  }
+}

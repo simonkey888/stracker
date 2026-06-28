@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+<style>
+/* ===== 4-LAYER FIXED LAYOUT — CAPA 1-4 ARCHITECTURE ===== */
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;color:#fff;font-family:system-ui,-apple-system,BlinkMacSystemFont,'SF Pro Display','Helvetica Neue',sans-serif;overflow:hidden;-webkit-font-smoothing:antialiased}
+#map{position:fixed;inset:0;z-index:1}
+.leaflet-container{background:#000}
+.leaflet-popup-content-wrapper{background:rgba(20,20,20,.85);backdrop-filter:blur(18px);color:#f5f5f7;border:1px solid rgba(255,255,255,.08);border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.leaflet-popup-tip{background:rgba(20,20,20,.85)}
+.leaflet-popup-content{font-size:13px;line-height:1.5;margin:10px 14px}
+.leaflet-control-zoom{border:none!important;box-shadow:none!important;margin:10px!important}
+.leaflet-control-zoom a{background:rgba(20,20,20,.72)!important;backdrop-filter:blur(18px)!important;color:#8e8e93!important;border:1px solid rgba(255,255,255,.08)!important;width:36px!important;height:36px!important;line-height:36px!important;font-size:16px!important;border-radius:10px!important;margin-bottom:2px!important}
+.leaflet-control-zoom a:hover{background:rgba(40,40,40,.85)!important;color:#f5f5f7!important}
+.marker-cluster-small,.marker-cluster-medium,.marker-cluster-large{background-color:rgba(100,100,100,.12)!important}
+.marker-cluster-small div,.marker-cluster-medium div,.marker-cluster-large div{background-color:rgba(100,100,100,.35)!important;color:#f5f5f7!important;font-weight:600!important}
+
+/* Live pulsing marker — Tom Clancy cyan */
+.live-marker{position:relative;display:flex;flex-direction:column;align-items:center;pointer-events:none}
+.live-dot{width:18px;height:18px;border-radius:50%;background:#00CCCC;border:3px solid #f5f5f7;box-shadow:0 2px 8px rgba(0,204,204,.4);position:relative}
+.live-dot::after{content:'';position:absolute;inset:-6px;border-radius:50%;border:2px solid rgba(0,204,204,.5);animation:livePulse 2s ease-out infinite}
+@keyframes livePulse{0%{transform:scale(.8);opacity:.6}100%{transform:scale(2);opacity:0}}
+.live-speed{font-size:11px;font-weight:600;color:#f5f5f7;background:rgba(0,0,0,.6);padding:1px 5px;border-radius:4px;margin-top:3px;white-space:nowrap}
+
+/* ===== GhostRail Tom Clancy Styling ===== */
+.ghostrail{stroke:#ffb347;stroke-width:2px;opacity:.9}
+.ghostrail-secondary{stroke:#ffffff;opacity:.15}
+.ghostrail-active{stroke:#00d4ff;stroke-width:3px;opacity:.95;filter:drop-shadow(0 0 6px #00d4ff)}
+
+/* ===== CAPA 1 — HUD CORE (always visible, max 5 elements, pipe-separated) ===== */
+.hud-core{position:fixed;top:0;left:0;right:0;z-index:10;background:rgba(0,0,0,.55);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid rgba(255,255,255,.06);padding:7px 10px 5px;display:flex;align-items:center;justify-content:center;gap:0;flex-wrap:nowrap;overflow:hidden;safe-area-inset-top:env(safe-area-inset-top)}
+@media(min-width:700px){.hud-core{left:50%;right:auto;transform:translateX(-50%);width:520px;max-width:90vw;border-radius:0 0 18px 18px;border:1px solid rgba(255,255,255,.06);border-top:none}}
+.hi{display:inline-flex;align-items:center;gap:1px;font-size:12px;font-weight:600;white-space:nowrap;line-height:1.2;max-width:22%}
+.hi-sep{color:rgba(255,255,255,.18);font-weight:300;font-size:10px;flex-shrink:0;user-select:none;margin:0 5px}
+
+/* ===== CAPA 2 — STATE STRIP (NONI/DESPIER — separate from HUD) ===== */
+.state-strip{position:fixed;top:32px;left:0;right:0;z-index:10;background:rgba(0,0,0,.45);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,.04);padding:3px 0;text-align:center;pointer-events:none;transition:opacity .3s}
+@media(min-width:700px){.state-strip{left:50%;right:auto;transform:translateX(-50%);width:520px;max-width:90vw;border-radius:0 0 10px 10px;border:1px solid rgba(255,255,255,.04);border-top:none}}
+.ss-text{font-size:11px;font-weight:500;color:rgba(255,255,255,.55);letter-spacing:.2px}
+
+/* ===== CAPA 3 — VER MÁS (collapsible sheet) ===== */
+.vermas-sheet{position:fixed;top:52px;left:0;right:0;z-index:10;display:flex;flex-direction:column;pointer-events:none;max-height:calc(100vh - 52px)}
+@media(min-width:700px){.vermas-sheet{left:50%;right:auto;transform:translateX(-50%);width:520px;max-width:90vw}}
+.vermas-drawer{pointer-events:auto;border-radius:0 0 18px 18px;background:rgba(0,0,0,.65);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid rgba(255,255,255,.06);border-top:none;overflow:hidden;transition:max-height .35s cubic-bezier(.4,0,.2,1);max-height:0}
+.vermas-drawer.expanded{max-height:70vh}
+@media(min-width:700px){.vermas-drawer{border-radius:0 0 18px 18px}}
+.vermas-toggle{display:flex;justify-content:center;align-items:center;gap:6px;padding:6px 14px;cursor:pointer;color:rgba(255,255,255,.45);font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;-webkit-tap-highlight-color:transparent;pointer-events:auto}
+.chevron{transition:transform .2s;font-size:12px;color:rgba(255,255,255,.35)}
+.chevron.open{transform:rotate(90deg)}
+.vermas-content{padding:0 14px 14px;overflow-y:auto;max-height:calc(70vh - 50px);-webkit-overflow-scrolling:touch}
+.vermas-content::-webkit-scrollbar{width:0;display:none}
+
+/* Content groups inside VER MÁS */
+.cg{margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,.04)}
+.cg:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
+.cg-title{font-size:9px;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;font-weight:600}
+.d-row{display:flex;justify-content:space-between;align-items:center;padding:3px 0}
+.d-row:last-child{padding-bottom:0}
+.d-lbl{font-size:10px;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.3px;flex-shrink:0}
+.d-val{font-size:13px;color:#f5f5f7;font-weight:500;text-align:right;max-width:65%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.d-evt{font-size:11px;color:rgba(255,255,255,.6);padding:2px 0;display:flex;align-items:center;gap:4px}
+.d-evt-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.d-ghost-row{display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,.6);padding:2px 0}
+.d-ghost-dot{width:6px;height:6px;border-radius:2px;flex-shrink:0}
+.d-bt{font-size:11px;color:rgba(255,255,255,.5);padding:2px 0;font-style:italic}
+
+/* ===== CAPA 4 — ACTION SYSTEM (inside VER MÁS only) ===== */
+.action-bar{display:flex;justify-content:center;gap:10px;padding:10px 0 6px;border-top:1px solid rgba(255,255,255,.06);margin-top:6px}
+.ab{width:42px;height:42px;border-radius:50%;background:rgba(255,255,255,.06);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.08);color:#8e8e93;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;padding:0;-webkit-tap-highlight-color:transparent}
+.ab:hover{background:rgba(255,255,255,.12);color:#f5f5f7}
+.ab:active{transform:scale(.94)}
+.ab.active{color:#00CCCC;border-color:rgba(0,204,204,.3);background:rgba(0,204,204,.08)}
+
+/* Overlays */
+#spoofOverlay{position:fixed;inset:0;z-index:999;pointer-events:none;opacity:0;transition:opacity .5s}
+#spoofOverlay.active{opacity:1;animation:spoofAlert 2s ease-in-out infinite}
+@keyframes spoofAlert{0%{box-shadow:inset 0 0 60px 10px rgba(255,59,48,.08)}50%{box-shadow:inset 0 0 160px 40px rgba(255,59,48,.2)}100%{box-shadow:inset 0 0 60px 10px rgba(255,59,48,.08)}}
+#signalOverlay{position:fixed;inset:0;z-index:999;pointer-events:none;opacity:0;transition:opacity .5s}
+#signalOverlay.active{opacity:1;animation:signalPulse 2s ease-in-out infinite}
+@keyframes signalPulse{0%{box-shadow:inset 0 0 60px 10px rgba(255,149,0,.08)}50%{box-shadow:inset 0 0 160px 40px rgba(255,149,0,.15)}100%{box-shadow:inset 0 0 60px 10px rgba(255,149,0,.08)}}
+
+/* Toast — top center, glass, auto-hide 8s */
+#toast{position:fixed;top:90px;left:50%;transform:translateX(-50%);z-index:2000;background:rgba(20,20,20,.92);backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.08);color:#f5f5f7;padding:10px 22px;border-radius:14px;font-size:14px;font-weight:600;box-shadow:0 4px 24px rgba(0,0,0,.4);text-align:center;max-width:90vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .3s;display:none}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="spoofOverlay"></div>
+<div id="signalOverlay"></div>
+
+<!-- ===== CAPA 1 — HUD CORE (always visible, max 5, pipe-separated) ===== -->
+<div class="hud-core" id="hudCore">
+  <span class="hi" id="hi-dist">📍---</span>
+  <span class="hi-sep">·</span>
+  <span class="hi" id="hi-battery">🔋--%</span>
+  <span class="hi-sep">·</span>
+  <span class="hi" id="hi-zone">❓</span>
+  <span class="hi-sep">·</span>
+  <span class="hi" id="hi-motion">📲💤</span>
+  <span class="hi-sep">·</span>
+  <span class="hi" id="hi-network">📶</span>
+</div>
+
+<!-- ===== CAPA 2 — STATE STRIP (single span) ===== -->
+<div class="state-strip" id="stateStrip">
+  <span class="ss-text" id="ssText">DESPIER 🙋‍♀️ activa</span>
+</div>
+
+<!-- ===== CAPA 3 — VER MÁS (collapsible sheet) ===== -->
+<div class="vermas-sheet" id="vermasSheet">
+  <div class="vermas-drawer" id="vermasDrawer">
+    <div class="vermas-toggle" id="vermasToggle">
+      <span>VER MÁS</span>
+      <span class="chevron" id="chevron">▸</span>
+    </div>
+    <div class="vermas-content" id="vermasContent" style="display:none">
+      <!-- GPS Detail -->
+      <div class="cg" id="cgGps">
+        <div class="cg-title">GPS</div>
+        <div class="d-row"><span class="d-lbl">Lugar</span><span class="d-val" id="dPlace">---</span></div>
+        <div class="d-row"><span class="d-lbl">Lat</span><span class="d-val" id="dLat">---</span></div>
+        <div class="d-row"><span class="d-lbl">Lng</span><span class="d-val" id="dLng">---</span></div>
+        <div class="d-row"><span class="d-lbl">Precisión</span><span class="d-val" id="dAccuracy">---</span></div>
+        <div class="d-row"><span class="d-lbl">Señal</span><span class="d-val" id="dGps">---</span></div>
+      </div>
+
+      <!-- Session (duration + screen on/off) -->
+      <div class="cg" id="cgSession">
+        <div class="cg-title">Sesión</div>
+        <div class="d-row"><span class="d-lbl">Duración</span><span class="d-val" id="dDuration">---</span></div>
+        <div class="d-row"><span class="d-lbl">Screen ON</span><span class="d-val" id="dScreenOn">0m</span></div>
+        <div class="d-row"><span class="d-lbl">Screen OFF</span><span class="d-val" id="dScreenOff">0m</span></div>
+      </div>
+
+      <!-- Events -->
+      <div class="cg" id="cgEvents">
+        <div class="d-events" id="dEvents"></div>
+      </div>
+
+      <!-- GhostRail -->
+      <div class="cg" id="cgGhost">
+        <div class="d-ghostrail" id="dGhost"></div>
+      </div>
+
+      <!-- System (network + battery_raw + motion_raw) -->
+      <div class="cg" id="cgSystem">
+        <div class="cg-title">Sistema</div>
+        <div class="d-row"><span class="d-lbl">Red</span><span class="d-val" id="dNetwork">---</span></div>
+        <div class="d-row"><span class="d-lbl">Batería</span><span class="d-val" id="dBatteryRaw">---</span></div>
+        <div class="d-row"><span class="d-lbl">Movimiento</span><span class="d-val" id="dMotionRaw">---</span></div>
+      </div>
+
+      <!-- ===== CAPA 4 — ACTION SYSTEM (inside VER MÁS only) ===== -->
+      <div class="action-bar" id="actionBar">
+        <button id="btnCenter" class="ab" title="Centrar">📍</button>
+        <button id="btnLayers" class="ab" title="Satélite">🗺️</button>
+        <button id="btnGhost" class="ab" title="GhostRail">👻</button>
+        <button id="btnCookies" class="ab" title="Sync Cookies" onclick="window.open('/cookies.html','_blank')">🔄</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script>
+var data=[]; /* HARD_LOCK_V2: empty — ALL data from /api/points, zero fallback */
+var stats=null; /* HARD_LOCK_V2: null — never used as live source, removed */
+/* HARD_LOCK_V2 IPC-BOUND: INIT_STATE is a SKELETON-ONLY placeholder.
+   Contains ZERO usable data — no real coordinates, no real values.
+   ALL fields are "---" placeholders or safe defaults.
+   This exists ONLY to prevent null-reference errors before /api/points responds.
+   After /api/points responds, this object is NEVER referenced again.
+   Using ANY value from INIT_STATE as real data = ARCHITECTURE_INVALID.
+   The map center (null,null) is intentionally absent — the real position comes
+   exclusively from /api/points → state_kernel → build_ui. No marker is placed until /api/points responds. */
+var INIT_STATE={"ui":{"hud":[{"id":"dist","text":"📍---"},{"id":"battery","text":"🔋--%"},{"id":"zone","text":"❓"},{"id":"motion","text":"📲💤"},{"id":"network","text":"❌"}],"state_strip":"---","ver_mas":{"gps":{"place":"---","lat_str":"---","lng_str":"---","accuracy":"---","signal":"---"},"session":{"duration":"---","screen_on":"0m","screen_off":"0m"},"system":{"network":"---","battery_raw":"---","motion_raw":"---"},"events":[],"ghostrail":[]},"overlays":{"spoof":false,"signal":false,"alert_loop":false},"toast":null,"map":{"lat":null,"lng":null,"lat_str":"---","lng_str":"---","show_speed":false,"speed_label":"","mode":"STATIC","is_home":false,"auto_unlock_camera":false},"page_title":"Tracker"}};
+var ghostData=[];
+var REFRESH_MS=10000;
+var _lastGoodDataTime=Date.now();
+var _signalLost=false;
+var _toastTimer=null;
+var _currentState=null;
+var _ghostTrailLayer=null;
+var _ghostTrailVisible=true;
+var _firstRender=true;
+var _programmaticMove=false;
+var _drawerOpen=false;
+var _lastPingTs=Date.now();
+
+/* ===== GHOSTRAIL localStorage PERSISTENCE (V4) ===== */
+function _saveGhostrailToStorage(){
+  try{localStorage.setItem('ghostrail_data',JSON.stringify(ghostData))}catch(e){}
+}
+function _loadGhostrailFromStorage(){
+  try{
+    var stored=localStorage.getItem('ghostrail_data');
+    if(stored){
+      var parsed=JSON.parse(stored);
+      if(Array.isArray(parsed)&&parsed.length>0){
+        var serverTs=new Set(ghostData.map(function(p){return p.t}));
+        parsed.forEach(function(p){
+          if(p.t&&!serverTs.has(p.t)){ghostData.push(p)}
+        });
+        ghostData.sort(function(a,b){return(a.t||'').localeCompare(b.t||'')});
+      }
+    }
+  }catch(e){}
+}
+
+/* ===== EVENT HISTORY localStorage PERSISTENCE (V4) ===== */
+function _saveEventsToStorage(events){
+  try{localStorage.setItem('event_history',JSON.stringify(events))}catch(e){}
+}
+function _loadEventsFromStorage(){
+  try{
+    var stored=localStorage.getItem('event_history');
+    if(stored){return JSON.parse(stored)}
+  }catch(e){}
+  return[];
+}
+
+/* ===== C: EVENT LEDGER — append-only, max 50 ===== */
+function _loadEventLedgerFromStorage(){
+  try{
+    var stored=localStorage.getItem('event_ledger');
+    if(stored){return JSON.parse(stored)}
+  }catch(e){}
+  return[];
+}
+
+var pts=data.filter(function(p){return p.lat!=null&&p.lng!=null&&isFinite(p.lat)&&isFinite(p.lng)});
+console.log('[Tracker v10.2] HARD_LOCK_V2 IPC-BOUND — ui_authority_layer=state_kernel_only — execution: /api/points → KERNEL_AUTH_TOKEN → normalize_state(_kernel_auth) → build_ui → render(state.ui) —',pts.length,'pts —',ghostData.length,'ghost pts');
+
+_loadGhostrailFromStorage();
+
+/* ===== CAMERA LOCK SYSTEM ===== */
+var cameraState={center:null,zoom:null,user_locked:false,last_manual_move:0};
+try{var _savedCam=localStorage.getItem('camera_state');if(_savedCam){var _parsed=JSON.parse(_savedCam);if(_parsed){cameraState=_parsed}}}catch(e){}
+
+var initCenter=[0,0],initZoom=2;
+/* HARD_LOCK_V2 IPC-BOUND: default center is null — no hardcoded coordinates.
+   If user has a saved camera position from localStorage, restore that.
+   The real tracked position comes ONLY from /api/points. */
+if(cameraState.center&&isFinite(cameraState.center.lat)&&isFinite(cameraState.center.lng)&&cameraState.zoom){
+  initCenter=[cameraState.center.lat,cameraState.center.lng];
+  initZoom=cameraState.zoom;
+}else if(pts.length>0){
+  var lp=pts[pts.length-1];
+  if(isFinite(lp.lat)&&isFinite(lp.lng)){initCenter=[lp.lat,lp.lng];initZoom=18}
+}
+
+var map=L.map('map',{zoomControl:true,attributionControl:false,center:initCenter,zoom:initZoom});
+
+/* ===== SATELLITE TILE SYSTEM — SINGLE LAYER AT A TIME ===== */
+/* CRITICAL FIX: Only ONE tile layer active at a time. Never stack. */
+var mapMode='standard';
+var _activeTileLayer=null;
+var _satLabelsLayer=null;
+var _satErrorCount=0;
+var _satFallbackLevel=0; /* 0=ESRI, 1=Google, 2=CartoDB dark, 3=offline grid */
+var _darkTileErrorCount=0;
+var _offlineGridLayer=null;
+
+/* Helper: remove current tile layer, add new one */
+function _setSingleTileLayer(newLayer){
+  if(_activeTileLayer){try{map.removeLayer(_activeTileLayer)}catch(ex){}}
+  _activeTileLayer=newLayer;
+  if(_activeTileLayer){_activeTileLayer.addTo(map)}
+}
+
+/* Tile layer definitions (NOT added to map until needed) */
+var darkTile=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+  maxZoom:22,subdomains:'abcd'
+});
+var satTileESRI=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}?cb='+Date.now(),{
+  maxZoom:22,crossOrigin:'anonymous'
+});
+var satTileGoogle=L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',{
+  maxZoom:22,crossOrigin:'anonymous'
+});
+var satLabels=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png',{
+  maxZoom:22,subdomains:'abcd'
+});
+
+/* Start with dark tile as the single active layer */
+_setSingleTileLayer(darkTile);
+
+/* Dark tile error handler → offline grid */
+darkTile.on('tileerror',function(){
+  _darkTileErrorCount++;
+  if(_darkTileErrorCount>15&&mapMode==='standard'){
+    console.warn('[Tiles] Dark tile failed, showing offline grid');
+    _showOfflineGrid();
+  }
+});
+darkTile.on('tileload',function(){_darkTileErrorCount=0});
+
+/* ESRI satellite error handler → try Google */
+satTileESRI.on('tileerror',function(){
+  _satErrorCount++;
+  if(_satErrorCount>5&&mapMode==='satellite'&&_satFallbackLevel===0){
+    console.warn('[Tiles] ESRI sat failed, trying Google fallback');
+    _satFallbackLevel=1;
+    _satErrorCount=0;
+    _setSingleTileLayer(satTileGoogle);
+  }
+});
+satTileESRI.on('tileload',function(){_satErrorCount=0});
+
+/* Google satellite error handler → try CartoDB dark fallback */
+satTileGoogle.on('tileerror',function(){
+  _satErrorCount++;
+  if(_satErrorCount>10&&mapMode==='satellite'&&_satFallbackLevel===1){
+    console.warn('[Tiles] Google sat failed, trying CartoDB dark fallback');
+    _satFallbackLevel=2;
+    _satErrorCount=0;
+    /* Remove labels when falling back to dark */
+    if(_satLabelsLayer){try{map.removeLayer(_satLabelsLayer)}catch(ex){}_satLabelsLayer=null}
+    _setSingleTileLayer(darkTile);
+    mapMode='standard';
+    _showToast('SATÉLITE NO DISPONIBLE — MODO OSCURO');
+    var b=document.getElementById('btnLayers');if(b)b.classList.remove('active');
+  }
+});
+satTileGoogle.on('tileload',function(){_satErrorCount=0});
+
+/* OFFLINE TILE GRID — last fallback when all tile servers fail */
+function _showOfflineGrid(){
+  if(_offlineGridLayer){try{map.removeLayer(_offlineGridLayer)}catch(ex){}_offlineGridLayer=null}
+  _offlineGridLayer=L.gridLayer({
+    tileSize:256,
+    createTile:function(coords){
+      var tile=document.createElement('div');
+      tile.style.background='rgba(20,20,20,.95)';
+      tile.style.border='1px solid rgba(255,255,255,.04)';
+      tile.style.fontSize='9px';
+      tile.style.color='rgba(255,255,255,.2)';
+      tile.style.display='flex';
+      tile.style.alignItems='center';
+      tile.style.justifyContent='center';
+      tile.innerHTML=coords.x+','+coords.y+' @'+coords.z;
+      return tile;
+    }
+  });
+  _setSingleTileLayer(_offlineGridLayer);
+  _showToast('SIN CONEXIÓN — MAPA OFFLINE');
+}
+
+/* Toggle map mode — single layer at a time */
+function toggleMapMode(){
+  _satErrorCount=0;
+  if(mapMode==='standard'){
+    /* Switch to satellite: remove current, add ESRI */
+    mapMode='satellite';
+    _satFallbackLevel=0;
+    _setSingleTileLayer(satTileESRI);
+    /* Add labels overlay ONLY in satellite mode */
+    if(_satLabelsLayer){try{map.removeLayer(_satLabelsLayer)}catch(ex){}}
+    _satLabelsLayer=satLabels;
+    satLabels.addTo(map);
+  }else{
+    /* Switch to standard: remove satellite + labels, add dark */
+    mapMode='standard';
+    _satFallbackLevel=0;
+    if(_satLabelsLayer){try{map.removeLayer(_satLabelsLayer)}catch(ex){}_satLabelsLayer=null}
+    _setSingleTileLayer(darkTile);
+  }
+  var b=document.getElementById('btnLayers');if(b)b.classList.toggle('active',mapMode==='satellite');
+}
+
+/* Camera persistence */
+map.on('moveend',function(){
+  cameraState.center={lat:map.getCenter().lat,lng:map.getCenter().lng};
+  cameraState.zoom=map.getZoom();
+  if(!_programmaticMove){
+    cameraState.user_locked=true;
+    cameraState.last_manual_move=Date.now();
+  }
+  try{localStorage.setItem('camera_state',JSON.stringify(cameraState))}catch(e){}
+});
+
+/* Zone circles — HARD_LOCK_V2 IPC-BOUND: NOT hardcoded in JS.
+   Zone data comes from /api/points response (state.ghostrail, state.location).
+   No hardcoded coordinates in frontend — ALL location data from kernel. */
+map.invalidateSize();
+
+/* MarkerClusterGroup — speed_str and ts_str preformatted by Python, NO toFixed/toLocaleString in JS */
+var clusterGroup=L.markerClusterGroup({maxClusterRadius:50,spiderfyOnMaxZoom:true,disableClusteringAtZoom:17,chunkedLoading:true});
+pts.forEach(function(p,i){if(!isFinite(p.lat)||!isFinite(p.lng))return;var c=i===0?'#34C759':(i===pts.length-1?'#00CCCC':'#555'),r=i===0||i===pts.length-1?6:4;var m=L.circleMarker([p.lat,p.lng],{radius:r,fillColor:c,color:'rgba(255,255,255,.12)',weight:1,opacity:.35,fillOpacity:.35});m.bindPopup('<b>#'+(i+1)+'</b>'+(p.speed_str?'<br>'+p.speed_str:'')+'<br>'+(p.ts_str||''));clusterGroup.addLayer(m)});
+map.addLayer(clusterGroup);
+
+/* Live pulsing marker — speed_label preformatted by state_kernel (v1.1_FINAL_LOCK), NO threshold/Math.round in JS */
+var liveMarker=null;
+function updateLiveMarker(lat,lng,speedLabel){if(!isFinite(lat)||!isFinite(lng))return;if(liveMarker)map.removeLayer(liveMarker);var sHtml=speedLabel?'<div class="live-speed">'+speedLabel+'</div>':'';liveMarker=L.marker([lat,lng],{icon:L.divIcon({className:'',html:'<div class="live-marker"><div class="live-dot"></div>'+sHtml+'</div>',iconSize:[40,40],iconAnchor:[20,20]}),zIndexOffset:10000}).addTo(map)}
+/* HARD_LOCK_V2 IPC-BOUND: NO initial marker from skeleton — wait for /api/points live data */
+/* INIT_STATE has lat=null,lng=null (intentionally absent) — marker placed only after API response */
+window.__tracker={map:map,pts:pts,clusterGroup:clusterGroup,liveMarker:liveMarker,lastPointCount:pts.length};
+
+/* ===== GhostRail Tom Clancy ===== */
+function updateGhostTrail(ghostPts){
+  if(_ghostTrailLayer){map.removeLayer(_ghostTrailLayer);_ghostTrailLayer=null}
+  if(!_ghostTrailVisible)return;
+  if(!ghostPts||ghostPts.length<2)return;
+  var validPts=ghostPts.filter(function(p){return p.lat!=null&&p.lng!=null&&isFinite(p.lat)&&isFinite(p.lng)});
+  if(validPts.length<2)return;
+  var total=validPts.length;
+  var splitIdx=Math.floor(total*0.8);
+  if(splitIdx>=1){
+    var olderPts=validPts.slice(0,splitIdx+1).map(function(p){return[p.lat,p.lng]});
+    if(olderPts.length>=2){
+      var olderLine=L.polyline(olderPts,{className:'ghostrail',color:'#ffb347',weight:2,opacity:0.9}).addTo(map);
+      if(!_ghostTrailLayer){_ghostTrailLayer=olderLine}else{var grp=L.layerGroup([_ghostTrailLayer,olderLine]);_ghostTrailLayer=grp}
+    }
+  }
+  if(splitIdx<total-1){
+    var recentPts=validPts.slice(splitIdx).map(function(p){return[p.lat,p.lng]});
+    if(recentPts.length>=2){
+      var recentLine=L.polyline(recentPts,{className:'ghostrail-active',color:'#00d4ff',weight:3,opacity:0.95}).addTo(map);
+      if(!_ghostTrailLayer){_ghostTrailLayer=recentLine}else if(_ghostTrailLayer instanceof L.LayerGroup){_ghostTrailLayer.addLayer(recentLine)}else{var grp2=L.layerGroup([_ghostTrailLayer,recentLine]);_ghostTrailLayer=grp2}
+    }
+  }
+  _saveGhostrailToStorage();
+}
+updateGhostTrail(ghostData);
+
+/* ===== AUDIO ENGINE — CONSUME-ONCE, NO LOOP ===== */
+var _lastPlayedAudioId=null;
+var _lastPlayedTs=0;
+var AUDIO_MIN_INTERVAL=15000;
+
+function playAudioOnce(audioItem){
+  if(!audioItem||!audioItem.id)return;
+  if(audioItem.id===_lastPlayedAudioId)return;
+  if(Date.now()-_lastPlayedTs<AUDIO_MIN_INTERVAL)return;
+  _lastPlayedAudioId=audioItem.id;
+  _lastPlayedTs=Date.now();
+  try{
+    if(window.speechSynthesis){
+      var u=new SpeechSynthesisUtterance(audioItem.msg);
+      u.lang=audioItem.config&&audioItem.config.voice||'es-AR';
+      u.rate=audioItem.config&&audioItem.config.rate||1.0;
+      u.volume=audioItem.config&&audioItem.config.volume||0.9;
+      window.speechSynthesis.speak(u);
+    }
+  }catch(e){}
+}
+
+/* ===== VER MÁS DRAWER TOGGLE ===== */
+document.getElementById('vermasToggle').onclick=function(){
+  _drawerOpen=!_drawerOpen;
+  var drawer=document.getElementById('vermasDrawer');
+  var content=document.getElementById('vermasContent');
+  var chevron=document.getElementById('chevron');
+  if(_drawerOpen){
+    drawer.classList.add('expanded');
+    content.style.display='block';
+    chevron.classList.add('open');
+  }else{
+    drawer.classList.remove('expanded');
+    content.style.display='none';
+    chevron.classList.remove('open');
+  }
+};
+
+/* ================================================================
+   RENDER v10.2 — PURE RENDERER: UI = state.ui ONLY (HARD_LOCK_V2 IPC-BOUND)
+   ================================================================
+   HARD_LOCK_V2: ipc_bound_execution_core
+   - runtime_owner: state_kernel.py ONLY
+   - auth_model: IPC token (KERNEL_AUTH_TOKEN env → _kernel_auth arg)
+   - api_layer: /api/points = token-generating executor ONLY
+   - frontend: pure deterministic renderer (no fallback state)
+   
+   Execution graph (ALLOWED):
+     request → /api/points → KERNEL_AUTH_TOKEN → normalize_state(_kernel_auth) → build_ui → ui_snapshot → render
+   
+   Execution graph (FORBIDDEN):
+     ANY direct build_ui call outside state_kernel
+     ANY secondary UI generation layer
+     ANY frontend-derived state reconstruction
+     ANY import of state_kernel from other Python modules
+   
+   JS forbidden: formatting, classification, thresholding, string_generation,
+                 date_formatting, numeric_rounding, business_logic,
+                 toFixed, Math.round, toLocaleString, speed>1, zone===CASA
+   JS allowed: state_ui_binding, dom_update, map_render_calls, event_binding
+   ================================================================ */
+function render(state){
+  if(!state)return;
+  _currentState=state;
+  var ui=state.ui;
+  if(!ui)return;
+
+  /* ── CAPA 1 — HUD CORE ── */
+  if(ui.hud){
+    ui.hud.forEach(function(slot){
+      var el=document.getElementById('hi-'+slot.id);
+      if(el)el.textContent=slot.text;
+    });
+  }
+
+  /* ── CAPA 2 — STATE STRIP ── */
+  var ssEl=document.getElementById('ssText');
+  if(ssEl&&ui.state_strip!=null)ssEl.textContent=ui.state_strip;
+
+  /* ── CAPA 3 — VER MÁS ── */
+  if(ui.ver_mas){
+    var vm=ui.ver_mas;
+
+    /* GPS group */
+    var ePlace=document.getElementById('dPlace'); if(ePlace) ePlace.textContent=(vm.gps&&vm.gps.place)||'---';
+    var eLat=document.getElementById('dLat'); if(eLat) eLat.textContent=(vm.gps&&vm.gps.lat_str)||'---';
+    var eLng=document.getElementById('dLng'); if(eLng) eLng.textContent=(vm.gps&&vm.gps.lng_str)||'---';
+    var eAcc=document.getElementById('dAccuracy'); if(eAcc) eAcc.textContent=(vm.gps&&vm.gps.accuracy)||'---';
+    var eGpsD=document.getElementById('dGps'); if(eGpsD) eGpsD.textContent=(vm.gps&&vm.gps.signal)||'---';
+
+    /* Session group (duration + screen on/off) */
+    var eDuration=document.getElementById('dDuration'); if(eDuration) eDuration.textContent=(vm.session&&vm.session.duration)||'---';
+    var eScrOn=document.getElementById('dScreenOn'); if(eScrOn) eScrOn.textContent=(vm.session&&vm.session.screen_on)||'0m';
+    var eScrOff=document.getElementById('dScreenOff'); if(eScrOff) eScrOff.textContent=(vm.session&&vm.session.screen_off)||'0m';
+
+    /* Events (backend sends pre-colored) */
+    var eEvtContainer=document.getElementById('dEvents');
+    if(eEvtContainer&&vm.events){
+      if(vm.events.length>0){
+        var ehtml='<div class="cg-title">Eventos</div>';
+        vm.events.slice().reverse().forEach(function(ev){
+          ehtml+='<div class="d-evt"><span class="d-evt-dot" style="background:'+(ev.color||'#8e8e93')+'"></span>'+ev.msg+'</div>';
+        });
+        eEvtContainer.innerHTML=ehtml;
+      }else{
+        eEvtContainer.innerHTML='';
+      }
+    }
+
+    /* GhostRail (backend sends pre-colored with duration strings) */
+    var eGhost=document.getElementById('dGhost');
+    if(eGhost&&vm.ghostrail){
+      if(vm.ghostrail.length>0){
+        var ghtml='<div class="cg-title">GhostRail</div>';
+        vm.ghostrail.forEach(function(z){
+          ghtml+='<div class="d-ghost-row"><span class="d-ghost-dot" style="background:'+(z.color||'#8e8e93')+'"></span>'+z.name+' <span style="color:#f5f5f7;font-weight:500">'+z.duration+'</span></div>';
+        });
+        eGhost.innerHTML=ghtml;
+      }else{
+        eGhost.innerHTML='';
+      }
+    }
+
+    /* System group (network + battery_raw + motion_raw) */
+    var eNetD=document.getElementById('dNetwork'); if(eNetD) eNetD.textContent=(vm.system&&vm.system.network)||'---';
+    var eBatRaw=document.getElementById('dBatteryRaw'); if(eBatRaw) eBatRaw.textContent=(vm.system&&vm.system.battery_raw)||'---';
+    var eMotRaw=document.getElementById('dMotionRaw'); if(eMotRaw) eMotRaw.textContent=(vm.system&&vm.system.motion_raw)||'---';
+  }
+
+  /* ── MAP DATA — v1.1_FINAL_LOCK: all decisions precomputed in kernel ── */
+  /* show_speed: precomputed_boolean | speed_label: preformatted_display_string */
+  /* lat/lng: numeric for Leaflet (map_render_calls) | lat_str/lng_str: for display */
+  /* is_home: precomputed_boolean | auto_unlock_camera: precomputed_boolean */
+  if(ui.map&&ui.map.lat!=null&&ui.map.lng!=null){
+    updateLiveMarker(ui.map.lat,ui.map.lng,ui.map.speed_label||'');
+
+    /* Camera logic — precomputed auto_unlock_camera from kernel (v1.1_FINAL_LOCK) */
+    if(_firstRender&&!cameraState.center){
+      _programmaticMove=true;map.setView([ui.map.lat,ui.map.lng],18,{animate:true});_programmaticMove=false;
+      cameraState.user_locked=false;
+    }else if(cameraState.user_locked&&ui.map.auto_unlock_camera){
+      cameraState.user_locked=false;
+      _programmaticMove=true;map.setView([ui.map.lat,ui.map.lng],map.getZoom(),{animate:true});_programmaticMove=false;
+    }
+    _firstRender=false;
+  }
+
+  /* ── OVERLAYS ── */
+  var spoofOverlay=document.getElementById('spoofOverlay');
+  if(spoofOverlay){
+    if(ui.overlays&&ui.overlays.spoof)spoofOverlay.classList.add('active');
+    else spoofOverlay.classList.remove('active');
+  }
+  var signalOverlay=document.getElementById('signalOverlay');
+  if(signalOverlay){
+    if(ui.overlays&&ui.overlays.signal)signalOverlay.classList.add('active');
+    else signalOverlay.classList.remove('active');
+  }
+
+  /* ── TOAST ── */
+  if(ui.toast)_showToast(ui.toast);
+
+  /* ── ALERT LOOP (inside overlays per contract) ── */
+  if(ui.overlays&&ui.overlays.alert_loop)_showToast('⚠️ LOOP DETECTADO — Eventos pausados');
+
+  /* ── AUDIO (from state._audio_to_play — preserved) ── */
+  if(state._audio_to_play&&state._audio_to_play.length>0){
+    playAudioOnce(state._audio_to_play[0]);
+  }
+
+  /* ── EVENT LEDGER PERSISTENCE (localStorage) ── */
+  if(state.events&&state.events.length>0){
+    try{
+      var ledger=JSON.parse(localStorage.getItem('event_ledger')||'[]');
+      state.events.forEach(function(ev){
+        var dup=ledger.some(function(le){return le.type===ev.type&&le.msg===ev.msg&&le.ts===ev.ts});
+        if(!dup)ledger.push(ev);
+      });
+      ledger=ledger.slice(-50);
+      localStorage.setItem('event_ledger',JSON.stringify(ledger));
+    }catch(e){}
+  }
+
+  if(state.meta&&state.meta.timestamp){_lastPingTs=new Date(state.meta.timestamp).getTime()}
+}
+
+/* Toast */
+function _showToast(msg){var t=document.getElementById('toast');if(!t)return;if(_toastTimer)clearTimeout(_toastTimer);t.textContent=msg;t.style.display='block';t.style.opacity='1';_toastTimer=setTimeout(function(){t.style.opacity='0';setTimeout(function(){t.style.display='none'},300)},8000)}
+function _hideToast(){var t=document.getElementById('toast');if(t){t.style.opacity='0';setTimeout(function(){t.style.display='none'},300)}}
+
+render(INIT_STATE); /* HARD_LOCK_V2 IPC-BOUND: skeleton first-paint ONLY — lat=null,lng=null, all "---" — immediately replaced by /api/points */
+
+/* HARD_LOCK_V2: ALL live state comes from /api/points — the ONLY execution path.
+   After this succeeds, INIT_STATE is never referenced again for rendering.
+   ANY_SECOND_PATH = ARCHITECTURE_INVALID */
+/* Initial fetch from state_kernel API — replaces hardcoded INIT_STATE with live data */
+(async function(){
+  try{
+    var resp=await fetch('/api/points');
+    if(resp.ok){
+      var body=await resp.json();
+      if(body.state){
+        _lastGoodDataTime=Date.now();
+        if(body.points&&body.points.length>0){
+          var newPts=body.points.filter(function(p){return isFinite(p.lat)&&isFinite(p.lng)});
+          if(newPts.length>0){
+            t=window.__tracker;
+            if(t){
+              t.clusterGroup.clearLayers();
+              newPts.forEach(function(p,i){if(!isFinite(p.lat)||!isFinite(p.lng))return;var c=i===0?'#34C759':'#555',r=i===0?6:4;var m=L.circleMarker([p.lat,p.lng],{radius:r,fillColor:c,color:'rgba(255,255,255,.12)',weight:1,opacity:.35,fillOpacity:.35});m.bindPopup('<b>#'+(i+1)+'</b>'+(p.speed_str?'<br>'+p.speed_str:'')+'<br>'+(p.ts_str||''));t.clusterGroup.addLayer(m)});
+              t.pts=newPts;t.lastPointCount=newPts.length;
+            }
+            data=newPts;
+          }
+        }
+        if(body.ghostrail_pts&&body.ghostrail_pts.length>=2){
+          ghostData=body.ghostrail_pts;
+          updateGhostTrail(ghostData);
+        }
+        render(body.state);
+        if(body.state.ui&&body.state.ui.page_title)document.title=body.state.ui.page_title;
+      }
+    }
+  }catch(e){console.warn('[Init] API fetch error:',e.message)}
+})();
+
+/* CAPA 4 — ACTION BUTTONS (inside VER MÁS only) */
+
+/* Action: Center */
+document.getElementById('btnCenter').onclick=function(){
+  cameraState.user_locked=false;
+  if(_currentState&&_currentState.ui&&_currentState.ui.map){
+    var m=_currentState.ui.map;if(m.lat!=null&&m.lng!=null){_programmaticMove=true;map.setView([m.lat,m.lng],map.getZoom(),{animate:true});_programmaticMove=false}}
+};
+/* Action: Satellite toggle */
+document.getElementById('btnLayers').onclick=toggleMapMode;
+/* Action: Ghost trail toggle */
+document.getElementById('btnGhost').onclick=function(){
+  _ghostTrailVisible=!_ghostTrailVisible;
+  var b=document.getElementById('btnGhost');
+  if(b)b.classList.toggle('active',_ghostTrailVisible);
+  if(!_ghostTrailVisible&&_ghostTrailLayer){map.removeLayer(_ghostTrailLayer);_ghostTrailLayer=null}
+  else if(_ghostTrailVisible){updateGhostTrail(ghostData)}
+};
+if(_ghostTrailVisible){var gb=document.getElementById('btnGhost');if(gb)gb.classList.add('active')}
+
+/* Signal lost detection */
+setInterval(function(){var elapsed=Date.now()-_lastGoodDataTime;if(elapsed>1500000&&!_signalLost){_signalLost=true;var ov=document.getElementById('signalOverlay');if(ov)ov.classList.add('active')}if(elapsed<=1500000&&_signalLost){_signalLost=false;var ov=document.getElementById('signalOverlay');if(ov)ov.classList.remove('active')}},5000);
+
+/* LIVE REFRESH — HARD_LOCK_V2: /api/points is the ONLY source of truth for UI state */
+setInterval(async function(){
+  var t=window.__tracker;if(!t)return;
+  try{
+    var resp=await fetch('/api/points');
+    if(!resp.ok)return;
+    var body=await resp.json();
+    if(!body.state)return;
+    _lastGoodDataTime=Date.now();
+    if(_signalLost){_signalLost=false;var ov=document.getElementById('signalOverlay');if(ov)ov.classList.remove('active')}
+
+    if(body.points&&body.points.length>t.lastPointCount){
+      var newPts=body.points.filter(function(p){return isFinite(p.lat)&&isFinite(p.lng)});
+      t.clusterGroup.clearLayers();
+      newPts.forEach(function(p,i){if(!isFinite(p.lat)||!isFinite(p.lng))return;var c=i===0?'#34C759':'#555',r=i===0?6:4;var m=L.circleMarker([p.lat,p.lng],{radius:r,fillColor:c,color:'rgba(255,255,255,.12)',weight:1,opacity:.35,fillOpacity:.35});m.bindPopup('<b>#'+(i+1)+'</b>'+(p.speed_str?'<br>'+p.speed_str:'')+'<br>'+(p.ts_str||''));t.clusterGroup.addLayer(m)});
+      t.pts=newPts;t.lastPointCount=newPts.length
+    }
+
+    if(body.ghostrail_pts&&body.ghostrail_pts.length>=2){
+      var existingTs=new Set(ghostData.map(function(p){return p.t}));
+      body.ghostrail_pts.forEach(function(p){if(p.t&&!existingTs.has(p.t)){ghostData.push(p)}});
+      updateGhostTrail(ghostData);
+    }else{
+      var gState=body.state.ghostrail||{};var gPts=gState.points_24h||[];
+      if(gPts.length>=2){updateGhostTrail(gPts)}
+    }
+
+    render(body.state);
+
+    if(body.state.ui&&body.state.ui.page_title)document.title=body.state.ui.page_title;
+  }catch(e){console.warn('[Live] Error:',e.message)}
+},REFRESH_MS);
+</script>
+</body>
+</html>

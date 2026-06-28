@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>Tracker v10.0 MAP_ENGINE_PRO</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+/* ===== B_UI_SAFE_LAYOUT_ENGINE — APPLE_MAPS_DARK_MINIMAL v10.0 ===== */
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;color:#fff;font-family:system-ui,-apple-system,BlinkMacSystemFont,'SF Pro Display','Helvetica Neue',sans-serif;overflow:hidden;-webkit-font-smoothing:antialiased}
+#map{position:fixed;inset:0;z-index:1}
+.leaflet-container{background:#000}
+.leaflet-popup-content-wrapper{background:rgba(20,20,20,.85);backdrop-filter:blur(18px);color:#f5f5f7;border:1px solid rgba(255,255,255,.08);border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.leaflet-popup-tip{background:rgba(20,20,20,.85)}
+.leaflet-popup-content{font-size:13px;line-height:1.5;margin:10px 14px}
+.leaflet-control-zoom{border:none!important;box-shadow:none!important;margin:10px!important}
+.leaflet-control-zoom a{background:rgba(20,20,20,.72)!important;backdrop-filter:blur(18px)!important;color:#8e8e93!important;border:1px solid rgba(255,255,255,.08)!important;width:36px!important;height:36px!important;line-height:36px!important;font-size:16px!important;border-radius:10px!important;margin-bottom:2px!important}
+.leaflet-control-zoom a:hover{background:rgba(40,40,40,.85)!important;color:#f5f5f7!important}
+.marker-cluster-small,.marker-cluster-medium,.marker-cluster-large{background-color:rgba(100,100,100,.12)!important}
+.marker-cluster-small div,.marker-cluster-medium div,.marker-cluster-large div{background-color:rgba(100,100,100,.35)!important;color:#f5f5f7!important;font-weight:600!important}
+
+/* Live pulsing marker */
+.live-marker{position:relative;display:flex;flex-direction:column;align-items:center;pointer-events:none}
+.live-dot{width:18px;height:18px;border-radius:50%;background:#00CCCC;border:3px solid #f5f5f7;box-shadow:0 2px 8px rgba(0,204,204,.4);position:relative}
+.live-dot::after{content:'';position:absolute;inset:-6px;border-radius:50%;border:2px solid rgba(0,204,204,.5);animation:livePulse 2s ease-out infinite}
+@keyframes livePulse{0%{transform:scale(.8);opacity:.6}100%{transform:scale(2);opacity:0}}
+.live-speed{font-size:11px;font-weight:600;color:#f5f5f7;background:rgba(0,0,0,.6);padding:1px 5px;border-radius:4px;margin-top:3px;white-space:nowrap}
+
+/* GhostRail */
+.ghostrail{stroke:#ffb347;stroke-width:2px;opacity:.9}
+.ghostrail-active{stroke:#00d4ff;stroke-width:3px;opacity:.95;filter:drop-shadow(0 0 6px #00d4ff)}
+
+/* ===== TOP_BLOCK: METRICAS — v10.0 NONI/DESPIER + EMOJI + LABEL SMALL ===== */
+.metrics-top{position:fixed;top:0;left:0;right:0;z-index:10;background:rgba(0,0,0,.55);backdrop-filter:blur(24px);border-bottom:1px solid rgba(255,255,255,.06);padding:8px 10px 6px;display:flex;flex-wrap:wrap;gap:3px 8px;align-items:center;justify-content:center;safe-area-inset-top:env(safe-area-inset-top)}
+@media(min-width:700px){.metrics-top{left:50%;right:auto;transform:translateX(-50%);width:520px;max-width:90vw;border-radius:0 0 18px 18px;border:1px solid rgba(255,255,255,.06);border-top:none}}
+.mt{display:flex;align-items:center;gap:2px;font-size:12px;font-weight:600;white-space:nowrap;line-height:1.2}
+.mt-emoji{font-size:13px;flex-shrink:0}
+.mt-val{color:#f5f5f7;font-size:11px}
+.mt-sep{color:rgba(255,255,255,.18);font-weight:300;font-size:10px;flex-shrink:0;user-select:none}
+
+/* ===== VER MÁS DRAWER ===== */
+.panel{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;flex-direction:column;pointer-events:none;max-height:calc(100vh - 20px)}
+@media(min-width:700px){.panel{left:50%;right:auto;transform:translateX(-50%);width:520px;max-width:90vw}}
+.panel .metrics-top{pointer-events:auto}
+.drawer{pointer-events:auto;margin-top:0;border-radius:0 0 18px 18px;background:rgba(0,0,0,.65);backdrop-filter:blur(24px);border:1px solid rgba(255,255,255,.06);border-top:none;overflow:hidden;transition:max-height .3s ease;max-height:0}
+.drawer.expanded{max-height:70vh}
+@media(min-width:700px){.drawer{border-radius:0 0 18px 18px}}
+.drawer-toggle{display:flex;justify-content:center;align-items:center;gap:6px;padding:7px 14px;cursor:pointer;color:rgba(255,255,255,.45);font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;-webkit-tap-highlight-color:transparent}
+.chevron{transition:transform .2s;font-size:12px;color:rgba(255,255,255,.35)}
+.chevron.open{transform:rotate(90deg)}
+.drawer-content{padding:0 14px 14px;overflow-y:auto;max-height:calc(70vh - 60px);-webkit-overflow-scrolling:touch}
+.drawer-content::-webkit-scrollbar{width:0;display:none}
+.d-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.d-row:last-child{border-bottom:none}
+.d-lbl{font-size:10px;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.3px;flex-shrink:0}
+.d-val{font-size:13px;color:#f5f5f7;font-weight:500;text-align:right;max-width:65%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.d-events{margin-top:8px;border-top:1px solid rgba(255,255,255,.06);padding-top:6px}
+.d-evt{font-size:11px;color:rgba(255,255,255,.6);padding:2px 0;display:flex;align-items:center;gap:4px}
+.d-evt-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.d-ghost{margin-top:6px;border-top:1px solid rgba(255,255,255,.06);padding-top:6px}
+.d-ghost-row{display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,.6);padding:2px 0}
+.d-ghost-dot{width:6px;height:6px;border-radius:2px;flex-shrink:0}
+
+/* FAB TOOLS — INSIDE DRAWER ONLY */
+.drawer-fab{display:flex;justify-content:center;gap:8px;padding:10px 0 6px;border-top:1px solid rgba(255,255,255,.06);margin-top:8px}
+.fb{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.06);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.08);color:#8e8e93;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;padding:0;-webkit-tap-highlight-color:transparent}
+.fb:hover{background:rgba(255,255,255,.12);color:#f5f5f7}
+.fb:active{transform:scale(.94)}
+.fb.active{color:#00CCCC;border-color:rgba(0,204,204,.3);background:rgba(0,204,204,.08)}
+
+/* Overlays */
+#spoofOverlay{position:fixed;inset:0;z-index:999;pointer-events:none;opacity:0;transition:opacity .5s}
+#spoofOverlay.active{opacity:1;animation:spoofAlert 2s ease-in-out infinite}
+@keyframes spoofAlert{0%{box-shadow:inset 0 0 60px 10px rgba(255,59,48,.08)}50%{box-shadow:inset 0 0 160px 40px rgba(255,59,48,.2)}100%{box-shadow:inset 0 0 60px 10px rgba(255,59,48,.08)}}
+#signalOverlay{position:fixed;inset:0;z-index:999;pointer-events:none;opacity:0;transition:opacity .5s}
+#signalOverlay.active{opacity:1;animation:signalPulse 2s ease-in-out infinite}
+@keyframes signalPulse{0%{box-shadow:inset 0 0 60px 10px rgba(255,149,0,.08)}50%{box-shadow:inset 0 0 160px 40px rgba(255,149,0,.15)}100%{box-shadow:inset 0 0 60px 10px rgba(255,149,0,.08)}}
+
+/* Toast */
+#toast{position:fixed;top:80px;left:50%;transform:translateX(-50%);z-index:2000;background:rgba(20,20,20,.92);backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.08);color:#f5f5f7;padding:10px 22px;border-radius:14px;font-size:14px;font-weight:600;box-shadow:0 4px 24px rgba(0,0,0,.4);text-align:center;max-width:90vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .3s;display:none}
+
+/* v10.0 version badge */
+.version-badge{position:fixed;bottom:8px;right:8px;z-index:5;font-size:9px;color:rgba(255,255,255,.15);font-weight:500;letter-spacing:.5px;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="spoofOverlay"></div>
+<div id="signalOverlay"></div>
+
+<!-- B_UI_SAFE_LAYOUT_ENGINE: Panel (TOP + VER MÁS DRAWER) -->
+<div class="panel" id="panel">
+  <!-- TOP_BLOCK: METRICAS — v10.0 NONI/DESPIER + EMOJI + LABEL SMALL -->
+  <div class="metrics-top" id="metricsTop">
+    <!-- LINE 1: Activity State + Battery + Distance -->
+    <span class="mt" id="mtActivity"><span class="mt-emoji" id="mvActivityE">🙋‍♀️</span><span class="mt-val" id="mvActivity">activa</span></span>
+    <span class="mt-sep">·</span>
+    <span class="mt" id="mtBatt"><span class="mt-emoji">🔋</span><span class="mt-val" id="mvBatt">⚡85%</span></span>
+    <span class="mt-sep">·</span>
+    <span class="mt" id="mtDist"><span class="mt-emoji">📍</span><span class="mt-val" id="mvDist">120m</span></span>
+    <!-- LINE 2: Zone + Motion + Net -->
+    <span class="mt-sep">·</span>
+    <span class="mt" id="mtZone"><span class="mt-emoji" id="mvZoneE">🏠</span><span class="mt-val" id="mvZone">Casa</span></span>
+    <span class="mt-sep">·</span>
+    <span class="mt" id="mtMotion"><span class="mt-emoji" id="mvMotionE">📲💤</span><span class="mt-val" id="mvMotion">estático</span></span>
+    <span class="mt-sep">·</span>
+    <span class="mt" id="mtNet"><span class="mt-emoji">📶</span><span class="mt-val" id="mvNet">WIFI</span></span>
+  </div>
+
+  <!-- VER MÁS DRAWER -->
+  <div class="drawer" id="drawer">
+    <div class="drawer-toggle" id="drawerToggle">
+      <span>VER MÁS</span>
+      <span class="chevron" id="chevron">▸</span>
+    </div>
+    <div class="drawer-content" id="drawerContent" style="display:none">
+      <div class="d-row"><span class="d-lbl">LUGAR</span><span class="d-val" id="dPlace">Casa</span></div>
+      <div class="d-row"><span class="d-lbl">LAT</span><span class="d-val" id="dLat">-31.64693</span></div>
+      <div class="d-row"><span class="d-lbl">LNG</span><span class="d-val" id="dLng">-60.71598</span></div>
+      <div class="d-row"><span class="d-lbl">PANTALLA</span><span class="d-val" id="dScreen">🟢 ON</span></div>
+      <div class="d-row"><span class="d-lbl">SCREEN ON</span><span class="d-val" id="dScreenOn">1h 23m</span></div>
+      <div class="d-row"><span class="d-lbl">SCREEN OFF</span><span class="d-val" id="dScreenOff">0m</span></div>
+      <div class="d-row"><span class="d-lbl">SESIÓN</span><span class="d-val" id="dSession">1h 23m</span></div>
+      <div class="d-row"><span class="d-lbl">TIEMPO</span><span class="d-val" id="dTime">45m en Casa</span></div>
+      <div class="d-row"><span class="d-lbl">RED</span><span class="d-val" id="dNetwork">📶 WIFI · GOOD</span></div>
+      <div class="d-row"><span class="d-lbl">GPS RAW</span><span class="d-val" id="dGps">🟢 GOOD</span></div>
+      <div class="d-events" id="dEvents"></div>
+      <div class="d-ghost" id="dGhost"></div>
+
+      <!-- FAB TOOLS (INSIDE DRAWER ONLY) -->
+      <div class="drawer-fab" id="drawerFab">
+        <button id="btnLayers" class="fb" title="Satélite">🗺️</button>
+        <button id="btnCenter" class="fb" title="Centrar">📍</button>
+        <button id="btnGhost" class="fb active" title="GhostRail">👻</button>
+        <button id="btnCookies" class="fb" title="Sync Cookies">🔄</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+<div class="version-badge">v10.0 MAP_ENGINE_PRO</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ===== SAMPLE STATE DATA — v10.0 MAP_ENGINE_PRO PREVIEW ===== */
+var INIT_STATE = {
+  meta: { timestamp: new Date().toISOString(), device_id: "sofi", version: "v10.0", engine: "MAP_ENGINE_PRO" },
+  location: { lat: -31.64693, lng: -60.71598, label_primary: "Casa", since_sec: 2700, time_in_zone_sec: 2700, distance_to_home_m: 0, zone: "HOME", zone_es: "CASA", inferred_place_label: "Casa" },
+  movement: { speed_kmh: 0, mode: "STATIC", motion_class: "STATIC", motion_display: "estático 📲💤", mode_emoji: "⏸ STATIC", confidence: 0.9 },
+  activity: { score: 15, level: "LOW", activity_signal: "BAJA ACTIVIDAD", screen_state: "ON" },
+  network: { type: "📶 WIFI", type_raw: "WIFI", quality: "GOOD", signal_quality: "GOOD" },
+  device: { battery: 85, battery_pct: 85, battery_render: { emoji: "🔋⚡", tier: "HIGH", label: "HIGH" }, charging: false, screen: "🟢", screen_state: "ON" },
+  gps: { status: "🟢", latlng_visible_in_ui: false },
+  spoof: { risk: 0, bayesian_risk_score: 0, flag: "OK", label: "OK" },
+  proximity: { home_distance_m: 0, distance_to_home_m: 0, alerts: {}, arrival_state: "ARRIVED", arrival: "ARRIVED", arrival_mode: "WALK", mode: "WALK", distance_m: 0 },
+  ghostrail: { enabled: true, max_points: 300, compression: "clustered", storage: "localStorage_and_event_ledger", never_reset_on_render: true, last_zones: [{name:"Casa",min:45},{name:"En ruta",min:12},{name:"Trabajo",min:30}], timeline_active: true },
+  events: [
+    {type:"LLEGADA_CASA",msg:"LLEGÓ A CASA",ts:new Date(Date.now()-3600000).toISOString()},
+    {type:"CAMBIO_ZONA",msg:"En ruta → Casa",ts:new Date(Date.now()-3600000).toISOString()},
+    {type:"NETWORK_CHANGE",msg:"4G → WIFI",ts:new Date(Date.now()-7200000).toISOString()},
+  ],
+  events_meta: { ledger_max: 50, dedupe_window_sec: 20, max_audio_repeats: 3, max_push_repeats: 3, hard_stop_loop: true, mute_window_sec: 60, no_repeat_if_state_same: true },
+  data_recovery: { session_total_time: 4980, screen_on_duration_sec: 4980, screen_off_duration_sec: 0, session_time: 4980, persist_layer: "event_ledger_append_only", rebuild_strategy: "REPLAY_EVENTS_CHRONOLOGICALLY", storage: ["localStorage_snapshot","event_ledger","daily_log_json"] },
+  activity_state: { state: "DESPIER", is_active: true, display: "DESPIER 🙋‍♀️", emoji: "🙋‍♀️", noni_sec: 0, despier_sec: 4980, last_active_ts: new Date().toISOString() },
+  ui: { rendered_place: null, last_zone_change_ts: new Date().toISOString() },
+  _audio_to_play: [],
+  _alert_loop_detected: false
+};
+
+/* Sample ghost trail points — simulated route */
+var ghostData = [];
+(function(){
+  var baseLat=-31.648, baseLng=-60.718;
+  for(var i=0;i<40;i++){
+    var t=i/40;
+    var lat=baseLat+0.003*Math.sin(t*Math.PI*2)+0.001*Math.cos(t*Math.PI*4);
+    var lng=baseLng+0.004*t+0.001*Math.sin(t*Math.PI*3);
+    ghostData.push({lat:lat,lng:lng,t:new Date(Date.now()-40*20000+i*20000).toISOString(),speed:2+Math.random()*5,zone:i<10?"TRANSIT":(i<30?"HOME":"TRANSIT")});
+  }
+})();
+
+/* Sample CSV points */
+var pts=[];
+(function(){
+  var baseLat=-31.64693, baseLng=-60.71598;
+  for(var i=0;i<20;i++){
+    pts.push({
+      lat:baseLat+Math.sin(i*0.3)*0.001,
+      lng:baseLng+Math.cos(i*0.3)*0.001,
+      timestamp:new Date(Date.now()-20*20000+i*20000).toISOString(),
+      speed_kmh:i<15?0:(2+Math.random()*3),
+      heading:i*18,
+      movement_state:i<15?"detenido":"lento"
+    });
+  }
+})();
+
+/* ===== LOOKUP TABLES ===== */
+var ZONE_MAP={'CASA':'🏠','TRABAJO':'💼','MOVIMIENTO':'🛣️','DESCONOCIDO':'❓','HOME':'🏠','WORK':'💼','TRANSIT':'🛣️','IDLE':'❓','UNKNOWN':'❓'};
+var ZONE_LABEL={'CASA':'Casa','TRABAJO':'Trabajo','MOVIMIENTO':'En ruta','DESCONOCIDO':'---','HOME':'Casa','WORK':'Trabajo','TRANSIT':'En ruta','IDLE':'---','UNKNOWN':'---'};
+var ZONE_EMOJI_EXT={'HOME':'🏠','WORK':'💼','TRANSIT':'🛣️','UNKNOWN':'❓','ENTERTAINMENT':'🎵','CASA':'🏠','TRABAJO':'💼'};
+var MOTION_MAP={'STATIC':'⏸','WALK':'🚶','CAR':'🚗','BUS':'🚌'};
+var MOTION_LABEL={'STATIC':'estático','WALK':'a pie','CAR':'auto','BUS':'bus'};
+var NET_LABEL={'WIFI':'WIFI','4G':'4G','5G':'5G','OFFLINE':'OFFLINE','UNKNOWN':'---'};
+var BATTERY_TIER={'HIGH':'⚡','MID':'🌟','LOW':'☠'};
+var GPS_MAP={'GOOD':'🟢','WEAK':'🟡','NO_SIGNAL':'🔴','STRONG':'🟢'};
+
+/* ===== INIT MAP ===== */
+var map=L.map('map',{zoomControl:true,attributionControl:false,center:[-31.64693,-60.71598],zoom:17});
+
+/* ===== SATELLITE TILE SYSTEM — 4-LAYER FALLBACK v10.0 ===== */
+var _satErrorCount=0;
+var _satUsingAlt=false;
+
+/* Layer 1: Dark tile (default) */
+var darkTile=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+  maxZoom:22,subdomains:'abcd'
+});
+
+/* Layer 2: ESRI satellite (primary sat) */
+var _satBust='cb='+Date.now();
+var satTile=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}?'+_satBust,{
+  maxZoom:22,crossOrigin:'anonymous'
+});
+
+/* Layer 3: Google satellite (fallback sat) */
+var satTile2=L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',{
+  maxZoom:22,crossOrigin:'anonymous'
+});
+
+/* Satellite labels overlay */
+var satLabels=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png',{
+  maxZoom:22,subdomains:'abcd'
+});
+
+/* Start with dark tile */
+darkTile.addTo(map);
+var mapMode='standard';
+
+/* Tile error chain: ESRI → Google → CartoDB dark → offline grid */
+var _darkTileErrorCount=0;
+darkTile.on('tileerror',function(){
+  _darkTileErrorCount++;
+  if(_darkTileErrorCount>15&&mapMode==='standard'){
+    console.warn('[Tiles] Dark tile failed, showing offline grid');
+    try{map.removeLayer(darkTile)}catch(ex){}
+    _showOfflineGrid();
+  }
+});
+darkTile.on('tileload',function(){_darkTileErrorCount=0});
+
+satTile.on('tileerror',function(e){
+  _satErrorCount++;
+  if(_satErrorCount>5&&mapMode==='satellite'&&!_satUsingAlt){
+    console.warn('[Tiles] ESRI sat failed, trying Google fallback');
+    try{map.removeLayer(satTile)}catch(ex){}
+    satTile2.addTo(map);
+    _satUsingAlt=true;
+    _satErrorCount=0;
+  }else if(_satErrorCount>10&&mapMode==='satellite'&&_satUsingAlt){
+    console.warn('[Tiles] All satellite failed, falling back to dark');
+    try{map.removeLayer(satTile2)}catch(ex){}
+    try{map.removeLayer(satLabels)}catch(ex){}
+    darkTile.addTo(map);
+    mapMode='standard';
+    _satUsingAlt=false;
+    _satErrorCount=0;
+    _showToast('SATÉLITE NO DISPONIBLE — MODO OSCURO');
+    var b=document.getElementById('btnLayers');if(b)b.classList.remove('active');
+  }
+});
+
+satTile2.on('tileerror',function(e){
+  _satErrorCount++;
+  if(_satErrorCount>10&&mapMode==='satellite'){
+    try{map.removeLayer(satTile2)}catch(ex){}
+    try{map.removeLayer(satLabels)}catch(ex){}
+    darkTile.addTo(map);
+    mapMode='standard';
+    _satUsingAlt=false;
+    _satErrorCount=0;
+    _showToast('SATÉLITE NO DISPONIBLE — MODO OSCURO');
+    var b=document.getElementById('btnLayers');if(b)b.classList.remove('active');
+  }
+});
+
+satTile.on('tileload',function(){_satErrorCount=0});
+satTile2.on('tileload',function(){_satErrorCount=0});
+
+/* Layer 4: OFFLINE TILE GRID */
+var _offlineGridLayer=null;
+function _showOfflineGrid(){
+  if(_offlineGridLayer){map.removeLayer(_offlineGridLayer);_offlineGridLayer=null}
+  _offlineGridLayer=L.gridLayer({
+    tileSize:256,
+    createTile:function(coords){
+      var tile=document.createElement('div');
+      tile.style.background='rgba(20,20,20,.95)';
+      tile.style.border='1px solid rgba(255,255,255,.04)';
+      tile.style.fontSize='9px';
+      tile.style.color='rgba(255,255,255,.2)';
+      tile.style.display='flex';
+      tile.style.alignItems='center';
+      tile.style.justifyContent='center';
+      tile.innerHTML=coords.x+','+coords.y+' @'+coords.z;
+      return tile;
+    }
+  });
+  _offlineGridLayer.addTo(map);
+  _showToast('SIN CONEXIÓN — MAPA OFFLINE');
+}
+
+function toggleMapMode(){
+  _satErrorCount=0;_satUsingAlt=false;
+  if(mapMode==='standard'){
+    try{map.removeLayer(darkTile)}catch(ex){}
+    satTile.addTo(map);satLabels.addTo(map);mapMode='satellite';
+  }else{
+    try{map.removeLayer(satTile)}catch(ex){}
+    try{map.removeLayer(satTile2)}catch(ex){}
+    try{map.removeLayer(satLabels)}catch(ex){}
+    darkTile.addTo(map);mapMode='standard';_satUsingAlt=false;
+  }
+  var b=document.getElementById('btnLayers');if(b)b.classList.toggle('active',mapMode==='satellite');
+}
+
+/* Zone circles */
+L.circle([-31.64693,-60.71598],{radius:150,color:'#2a2a2a',fillColor:'#34C759',fillOpacity:.03,weight:1,opacity:.12}).addTo(map);
+L.circle([-31.6366,-60.7012],{radius:150,color:'#2a2a2a',fillColor:'#0077FF',fillOpacity:.03,weight:1,opacity:.12}).addTo(map);
+
+/* Points markers */
+var validPts=pts.filter(function(p){return p.lat!=null&&p.lng!=null&&isFinite(p.lat)&&isFinite(p.lng)});
+validPts.forEach(function(p,i){
+  var c=i===0?'#34C759':(i===validPts.length-1?'#00CCCC':'#555');
+  var r=i===0||i===validPts.length-1?6:4;
+  L.circleMarker([p.lat,p.lng],{radius:r,fillColor:c,color:'rgba(255,255,255,.12)',weight:1,opacity:.35,fillOpacity:.35}).addTo(map);
+});
+
+/* Live pulsing marker */
+var liveMarker=null;
+function updateLiveMarker(lat,lng,speed){
+  if(!isFinite(lat)||!isFinite(lng))return;
+  if(liveMarker)map.removeLayer(liveMarker);
+  var sHtml=speed>1?'<div class="live-speed">'+Math.round(speed)+' km/h</div>':'';
+  liveMarker=L.marker([lat,lng],{icon:L.divIcon({className:'',html:'<div class="live-marker"><div class="live-dot"></div>'+sHtml+'</div>',iconSize:[40,40],iconAnchor:[20,20]}),zIndexOffset:10000}).addTo(map);
+}
+updateLiveMarker(-31.64693,-60.71598,0);
+
+/* GhostRail */
+var _ghostTrailLayer=null;
+var _ghostTrailVisible=true;
+
+function updateGhostTrail(ghostPts){
+  if(_ghostTrailLayer){map.removeLayer(_ghostTrailLayer);_ghostTrailLayer=null}
+  if(!_ghostTrailVisible)return;
+  if(!ghostPts||ghostPts.length<2)return;
+  var validPts=ghostPts.filter(function(p){return p.lat!=null&&p.lng!=null&&isFinite(p.lat)&&isFinite(p.lng)});
+  if(validPts.length<2)return;
+  var total=validPts.length;
+  var splitIdx=Math.floor(total*0.8);
+  if(splitIdx>=1){
+    var olderPts=validPts.slice(0,splitIdx+1).map(function(p){return[p.lat,p.lng]});
+    if(olderPts.length>=2){
+      var olderLine=L.polyline(olderPts,{color:'#ffb347',weight:2,opacity:0.9}).addTo(map);
+      _ghostTrailLayer=olderLine;
+    }
+  }
+  if(splitIdx<total-1){
+    var recentPts=validPts.slice(splitIdx).map(function(p){return[p.lat,p.lng]});
+    if(recentPts.length>=2){
+      var recentLine=L.polyline(recentPts,{color:'#00d4ff',weight:3,opacity:0.95}).addTo(map);
+      if(!_ghostTrailLayer){_ghostTrailLayer=recentLine}
+      else if(_ghostTrailLayer instanceof L.LayerGroup){_ghostTrailLayer.addLayer(recentLine)}
+      else{var grp=L.layerGroup([_ghostTrailLayer,recentLine]);_ghostTrailLayer=grp}
+    }
+  }
+}
+updateGhostTrail(ghostData);
+
+/* ===== AUDIO ENGINE — CONSUME-ONCE, NO LOOP ===== */
+var _lastPlayedAudioId=null;
+var _lastPlayedTs=0;
+var AUDIO_MIN_INTERVAL=15000;
+
+function playAudioOnce(audioItem){
+  if(!audioItem||!audioItem.id)return;
+  if(audioItem.id===_lastPlayedAudioId)return;
+  if(Date.now()-_lastPlayedTs<AUDIO_MIN_INTERVAL)return;
+  _lastPlayedAudioId=audioItem.id;
+  _lastPlayedTs=Date.now();
+  try{
+    if(window.speechSynthesis){
+      var u=new SpeechSynthesisUtterance(audioItem.msg);
+      u.lang='es-AR';u.rate=1.0;u.volume=0.9;
+      window.speechSynthesis.speak(u);
+    }
+  }catch(e){}
+}
+
+/* ===== DRAWER TOGGLE ===== */
+var _drawerOpen=false;
+document.getElementById('drawerToggle').onclick=function(){
+  _drawerOpen=!_drawerOpen;
+  var drawer=document.getElementById('drawer');
+  var content=document.getElementById('drawerContent');
+  var chevron=document.getElementById('chevron');
+  if(_drawerOpen){
+    drawer.classList.add('expanded');
+    content.style.display='block';
+    chevron.classList.add('open');
+  }else{
+    drawer.classList.remove('expanded');
+    content.style.display='none';
+    chevron.classList.remove('open');
+  }
+};
+
+/* ===== FORMATTING HELPERS ===== */
+function _fmtDist(m){if(m==null)return'---';if(m>=1000)return(m/1000).toFixed(1)+' km';return m+'m'}
+function _fmtSince(s){if(!s||s<=0)return'';var h=Math.floor(s/3600),m=Math.floor((s%3600)/60);if(h>0)return h+'h '+m+'m';return m+'m'}
+function _fmtDur(s){if(!s||s<=0)return'0m';var h=Math.floor(s/3600),m=Math.floor((s%3600)/60);if(h>0)return h+'h '+m+'m';return m+'m'}
+
+/* v10: Auto-fallback to emoji-only if metrics overflow */
+function _checkMetricsOverflow(){
+  var bar=document.getElementById('metricsTop');
+  if(!bar)return;
+  var vals=bar.querySelectorAll('.mt-val');
+  if(bar.scrollWidth>bar.clientWidth){
+    vals.forEach(function(v){v.style.display='none'});
+  }else{
+    vals.forEach(function(v){v.style.display=''});
+  }
+}
+
+/* ===== RENDER v10.0 MAP_ENGINE_PRO ===== */
+function render(state){
+  if(!state)return;
+  var Loc=state.location||{},M=state.movement||{},N=state.network||{},
+      D=state.device||{},S=state.spoof||{},P=state.proximity||{},G=state.ghostrail||{},
+      A=state.activity||{},DR=state.data_recovery||{},AS=state.activity_state||{};
+
+  /* NONI/DESPIER — PRIMARY METRIC */
+  var asState=AS.state||'DESPIER';
+  var asEmoji=AS.emoji||'🙋‍♀️';
+  var eActE=document.getElementById('mvActivityE');if(eActE)eActE.textContent=asEmoji;
+  var eAct=document.getElementById('mvActivity');if(eAct){
+    if(asState==='NONI'){
+      var noniMin=Math.floor((AS.noni_sec||0)/60);
+      eAct.textContent=noniMin>0?'hace '+noniMin+'m':'ahora';
+    }else{
+      eAct.textContent='activa';
+    }
+  }
+
+  /* DISTANCE */
+  var dist=P.distance_to_home_m!=null?P.distance_to_home_m:Loc.distance_to_home_m;
+  var eDist=document.getElementById('mvDist');if(eDist)eDist.textContent=dist!=null?_fmtDist(dist):'---';
+
+  /* BATTERY */
+  var bp=D.battery_pct!=null?D.battery_pct:85;
+  var battTier=(D.battery_render&&D.battery_render.tier)||'HIGH';
+  var battSym=BATTERY_TIER[battTier]||'⚡';
+  var eBatt=document.getElementById('mvBatt');if(eBatt)eBatt.textContent=battSym+bp+'%';
+
+  /* ZONE */
+  var zone=Loc.zone||'HOME';
+  var zoneEmoji=ZONE_EMOJI_EXT[zone]||ZONE_MAP[zone]||'❓';
+  var zoneLbl=ZONE_LABEL[zone]||'---';
+  var eZoneE=document.getElementById('mvZoneE');if(eZoneE)eZoneE.textContent=zoneEmoji;
+  var eZone=document.getElementById('mvZone');if(eZone)eZone.textContent=zoneLbl;
+
+  /* MOTION: v10 — 📱🔛 se mueve / 📲💤 estático */
+  var mc=M.motion_class||M.mode||'STATIC';
+  var motionEmoji='📲💤';var motionLbl='estático';
+  if(M.motion_display){
+    if(M.motion_display.indexOf('estático')>=0){motionEmoji='📲💤';motionLbl='estático'}
+    else if(M.motion_display.indexOf('mueve')>=0){motionEmoji='📱🔛';motionLbl='se mueve'}
+  }else if(mc!=='STATIC'){
+    motionEmoji=MOTION_MAP[mc]||'📱🔛';
+    motionLbl=MOTION_LABEL[mc]||'se mueve';
+  }
+  var eMotionE=document.getElementById('mvMotionE');if(eMotionE)eMotionE.textContent=motionEmoji;
+  var eMotion=document.getElementById('mvMotion');if(eMotion)eMotion.textContent=motionLbl;
+
+  /* NETWORK */
+  var nt=N.type_raw||'WIFI';
+  var netLbl=NET_LABEL[nt]||nt;
+  var eNet=document.getElementById('mvNet');if(eNet)eNet.textContent=netLbl;
+
+  /* Check overflow */
+  setTimeout(_checkMetricsOverflow,50);
+
+  /* DRAWER FIELDS */
+  var ePlace=document.getElementById('dPlace');if(ePlace)ePlace.textContent=Loc.label_primary||'---';
+  var eLat=document.getElementById('dLat');if(eLat)eLat.textContent=Loc.lat!=null?Loc.lat.toFixed(5):'---';
+  var eLng=document.getElementById('dLng');if(eLng)eLng.textContent=Loc.lng!=null?Loc.lng.toFixed(5):'---';
+
+  var onDur=DR.screen_on_duration_sec||0;
+  var offDur=DR.screen_off_duration_sec||0;
+  var eScrOn=document.getElementById('dScreenOn');if(eScrOn)eScrOn.textContent=_fmtDur(onDur);
+  var eScrOff=document.getElementById('dScreenOff');if(eScrOff)eScrOff.textContent=_fmtDur(offDur);
+
+  var ss=D.screen_state||'ON';
+  var eScr=document.getElementById('dScreen');if(eScr)eScr.textContent=ss==='ON'?'🟢 ON':'🔴 OFF';
+
+  var sessTime=DR.session_time||0;
+  var eSession=document.getElementById('dSession');if(eSession)eSession.textContent=_fmtDur(sessTime);
+
+  var sinceTxt=_fmtSince(Loc.since_sec||0);
+  var eTime=document.getElementById('dTime');if(eTime)eTime.textContent=sinceTxt?sinceTxt+' en '+zoneLbl:'---';
+
+  var eNetD=document.getElementById('dNetwork');if(eNetD)eNetD.textContent='📶 '+netLbl+' · '+(N.quality||'---');
+
+  var spoofLabel=S.flag||S.label||'OK';
+  var gpsDetail;
+  if(spoofLabel!=='OK'){gpsDetail=(spoofLabel==='HIGH_RISK'?'🚨 ALERTA':'⚠️ SOSPECHOSO')+' ('+S.risk+'%)'}
+  else{gpsDetail='🟢 GOOD'}
+  var eGpsD=document.getElementById('dGps');if(eGpsD)eGpsD.textContent=gpsDetail;
+
+  /* EVENTS in drawer */
+  var eEvtContainer=document.getElementById('dEvents');
+  if(eEvtContainer){
+    var evts=state.events||[];
+    if(evts.length>0){
+      var evtColors={'LLEGADA_CASA':'#34c759','CAMBIO_ZONA':'#0a84ff','NETWORK_CHANGE':'#ff9500','BLUETOOTH_INFERENCE':'#5ac8fa','USER_POWER_OFF':'#ff3b30','DATA_WIFI_DISABLED':'#ff9500'};
+      var ehtml='<div style="font-size:10px;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px">Eventos</div>';
+      evts.reverse().forEach(function(ev){
+        var c=evtColors[ev.type]||'#8e8e93';
+        ehtml+='<div class="d-evt"><span class="d-evt-dot" style="background:'+c+'"></span>'+ev.msg+'</div>';
+      });
+      eEvtContainer.innerHTML=ehtml;
+    }
+  }
+
+  /* GHOSTRAIL in drawer */
+  var eGhost=document.getElementById('dGhost');
+  if(eGhost&&G.last_zones&&G.last_zones.length>0){
+    var zc={'Casa':'#34c759','Trabajo':'#0077FF','En ruta':'#ff9500','Otro':'#8e8e93'};
+    var ghtml='<div style="font-size:10px;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px">GhostRail</div>';
+    G.last_zones.forEach(function(z){
+      var c=zc[z.name]||'#8e8e93';
+      var dur=z.min||0;
+      var dt=dur>=60?Math.floor(dur/60)+'h '+Math.floor(dur%60)+'m':dur+'m';
+      ghtml+='<div class="d-ghost-row"><span class="d-ghost-dot" style="background:'+c+'"></span>'+z.name+' <span style="color:#f5f5f7;font-weight:500">'+dt+'</span></div>';
+    });
+    eGhost.innerHTML=ghtml;
+  }
+}
+
+/* Toast */
+var _toastTimer=null;
+function _showToast(msg){var t=document.getElementById('toast');if(!t)return;if(_toastTimer)clearTimeout(_toastTimer);t.textContent=msg;t.style.display='block';t.style.opacity='1';_toastTimer=setTimeout(function(){t.style.opacity='0';setTimeout(function(){t.style.display='none'},300)},8000)}
+
+/* ===== FAB BUTTONS (INSIDE DRAWER ONLY) ===== */
+document.getElementById('btnCenter').onclick=function(){
+  map.setView([-31.64693,-60.71598],17,{animate:true});
+};
+document.getElementById('btnLayers').onclick=toggleMapMode;
+document.getElementById('btnGhost').onclick=function(){
+  _ghostTrailVisible=!_ghostTrailVisible;
+  var b=document.getElementById('btnGhost');
+  if(b)b.classList.toggle('active',_ghostTrailVisible);
+  if(!_ghostTrailVisible&&_ghostTrailLayer){map.removeLayer(_ghostTrailLayer);_ghostTrailLayer=null}
+  else if(_ghostTrailVisible){updateGhostTrail(ghostData)}
+};
+document.getElementById('btnCookies').onclick=function(){
+  _showToast('🍪 Cookies sync — solo disponible en Render');
+};
+
+/* ===== SIMULATION: Cycle NONI/DESPIER every 30s ===== */
+var _simNoni=false;
+setInterval(function(){
+  _simNoni=!_simNoni;
+  var st=Object.assign({},INIT_STATE);
+  if(_simNoni){
+    st.activity_state={state:"NONI",is_active:false,display:"NONI 😴 hace 5m",emoji:"😴",noni_sec:300,despier_sec:0,last_active_ts:new Date(Date.now()-300000).toISOString()};
+    st.movement=Object.assign({},st.movement,{motion_class:"STATIC",motion_display:"estático 📲💤",speed_kmh:0});
+    st.device=Object.assign({},st.device,{screen_state:"OFF",screen:"🔴"});
+    st.location=Object.assign({},st.location,{zone:"HOME",zone_es:"CASA"});
+  }else{
+    st.activity_state={state:"DESPIER",is_active:true,display:"DESPIER 🙋‍♀️",emoji:"🙋‍♀️",noni_sec:0,despier_sec:1200,last_active_ts:new Date().toISOString()};
+    st.movement=Object.assign({},st.movement,{motion_class:"WALK",motion_display:"se mueve 📱🔛",mode_emoji:"🚶 A PIE",speed_kmh:3.2});
+    st.device=Object.assign({},st.device,{screen_state:"ON",screen:"🟢"});
+    st.location=Object.assign({},st.location,{zone:"TRANSIT",zone_es:"MOVIMIENTO",label_primary:"En ruta"});
+    updateLiveMarker(-31.64693,-60.71598,3.2);
+  }
+  render(st);
+},30000);
+
+/* Initial render */
+render(INIT_STATE);
+console.log('[Tracker v10.0] MAP_ENGINE_PRO — Preview loaded');
+</script>
+</body>
+</html>
