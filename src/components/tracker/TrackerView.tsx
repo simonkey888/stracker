@@ -989,7 +989,13 @@ function cleanDeviceLabel(label: string, inferred?: { label: string; confidence:
   }
 
   // V6.8 PRIORITY 1: telemetry-based inference wins for UNRECOGNIZED raw IDs.
-  const isObfuscatedId = label.length >= 16 && !/\s/.test(label) && /^[A-Za-z0-9_-]+$/.test(label)
+  // V6.10: lowered threshold from 16 to 10 chars — Google's ephemeral session
+  // tokens vary in length (ziQI=4, U-AE=4, IOzok7SI_fDyDQ=14). The 16-char
+  // threshold missed the shorter tokens, showing raw IDs instead of the
+  // collapsed primary device label. 10 chars catches all observed Google
+  // tokens while preserving clean model names (iPhone16,2=10 has a comma →
+  // fails /^[A-Za-z0-9_-]+$/; SM-S918B=8 < 10; Pixel 8 has a space).
+  const isObfuscatedId = label.length >= 10 && !/\s/.test(label) && /^[A-Za-z0-9_-]+$/.test(label)
   if (isObfuscatedId && inferred && inferred.confidence >= 0.62) {
     // V6.10: pin the inferred hardware profile as the primary device.
     pinPrimary(inferred.label, label)
