@@ -2732,6 +2732,36 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         if path == "/osrm-route":
             self._handle_osrm_route(); return
 
+        # V6.10d STATIC_ASSET_FALLBACK: Render's build command only copies
+        # _next/ and index.html to the project root. Other static assets
+        # (manifest.json, logo.svg, robots.txt, 404.html, mapa.html) exist
+        # only in nextjs-ui/ subfolder. SimpleHTTPRequestHandler serves from
+        # BASE_DIR (root) and returns a bare 404 for anything missing.
+        # This fallback checks nextjs-ui/ before letting super() 404, so
+        # /manifest.json → nextjs-ui/manifest.json is served correctly.
+        # Also guards against path traversal (no .. or absolute paths).
+        requested = path.lstrip("/")
+        if requested and ".." not in requested:
+            root_candidate = BASE_DIR / requested
+            if not root_candidate.exists() or not root_candidate.is_file():
+                niu_candidate = BASE_DIR / "nextjs-ui" / requested
+                if niu_candidate.exists() and niu_candidate.is_file():
+                    try:
+                        body = niu_candidate.read_bytes()
+                        self.send_response(200)
+                        import mimetypes as _mt
+                        ctype, _ = _mt.guess_type(requested)
+                        if not ctype:
+                            ctype = "application/octet-stream"
+                        self.send_header("Content-Type", ctype)
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Cache-Control", "public, max-age=3600")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+                    except Exception as _e:
+                        logger.warning("V6.10d static fallback failed for %s: %s", path, _e)
+
         return super().do_GET()
 
     def do_POST(self):
