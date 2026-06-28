@@ -1784,6 +1784,39 @@ def _parse_rpc_details(text):
     return bat, address, accuracy, charging
 
 
+# V6.11: Extract the ephemeral device token from the Google Location Sharing
+# response. Google rotates this token on every session, but the underlying
+# physical device remains the same. The frontend Golden Signature captures
+# the telemetry fingerprint (network + battery + charging) and maps ALL
+# future tokens to the pinned hardware label ("Samsung A16").
+DEVICE_TOKEN_RE = re.compile(r'"([A-Za-z0-9_-]{20,44})"')
+
+def _extract_device_token(text):
+    """Extract the ephemeral device token from the Google RPC response.
+
+    Google Location Sharing responses contain a device source ID — a long
+    alphanumeric string (20-44 chars, base64url-like). This token rotates
+    per session but identifies the same physical device. We extract it so
+    the frontend can collapse all rotations into one identity.
+    """
+    # Try to find the device token: a quoted string of 20-44 base64url chars
+    # that appears near battery/charging data (device context).
+    # Find all candidates, prefer the one closest to battery data.
+    candidates = DEVICE_TOKEN_RE.findall(text)
+    if not candidates:
+        return None
+    # Filter out obvious non-tokens (coords, timestamps)
+    for c in candidates:
+        # Skip pure numbers (timestamps)
+        if c.isdigit(): continue
+        # Skip very short or very long strings
+        if len(c) < 20 or len(c) > 44: continue
+        # Skip strings that look like coordinates
+        if '.' in c: continue
+        return c
+    return None
+
+
 # ════════════════════════════════════════════════════════════════
 # COOKIE ENGINE SERVICE — SELF-HEALING LAYER
 # ════════════════════════════════════════════════════════════════
@@ -1900,7 +1933,7 @@ _cookie_engine = CookieEngine()
 # ------------------------------------------------------------
 def tracking_loop(stop_event):
     global _CURRENT_BATTERY, _CURRENT_ADDRESS, _LAST_POLL_TIME, _LAST_POLL_LAT, _LAST_POLL_LNG
-    global _PREV_STATE, _LAST_UPDATE, _CURRENT_CHARGING
+    global _PREV_STATE, _LAST_UPDATE, _CURRENT_CHARGING, _DEVICE_LABEL
 
     init_csv()
     battery_info = None
@@ -1930,6 +1963,15 @@ def tracking_loop(stop_event):
 
             if lat is not None and lng is not None:
                 _no_coords_count = 0
+                # V6.11: extract device token from the raw Google response
+                try:
+                    _raw_text = re.sub(r"^\)\]\}'\s*\n?", "", raw) if raw else ""
+                    _token = _extract_device_token(_raw_text)
+                    if _token:
+                        _DEVICE_LABEL = _token
+                        logger.info("V6.11 device token: %s", _token)
+                except Exception as _e:
+                    logger.debug("V6.11 device token extraction failed: %s", _e)
                 if not is_duplicate(lat, lng):
                     now = datetime.now(timezone.utc)
                     speed, hdg, state = compute_telemetry(lat, lng, now)
@@ -2452,8 +2494,10 @@ _CURRENT_CHARGING = ""
 _BATTERY_HISTORY = []
 _BATTERY_LIFE_ESTIMATE = "N/A"
 _MAX_BATTERY_HISTORY = 30
-_LAST_UPDATE = ""
+_LAST_UPDATE = None
 _PREV_STATE = None
+# V6.11: device label extracted from Google payload (ephemeral session token)
+_DEVICE_LABEL = None
 
 
 class TrackerHandler(SimpleHTTPRequestHandler):
@@ -2597,7 +2641,9 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
-        if self.path in ("/health", "/health/", "/healthz"):
+        # V6.11: strip query string for route matching (RA1 pattern)
+        path = self.path.split("?", 1)[0]
+        if path in ("/health", "/health/", "/healthz"):
             try:
                 csv_exists = CSV_PATH.exists()
                 html_exists = HTML_PATH.exists()
@@ -2613,7 +2659,7 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         # Reads cold storage (ghostrail_archive.enc) on demand.
         # Supports ?offset=0&limit=500 pagination + ?dry_run=1 to preview
         # archival impact without mutating state. Rate limited: 10 req/min.
-        if self.path.startswith("/api/archive") or self.path.startswith("/archive"):
+        if path.startswith("/api/archive") or path.startswith("/archive"):
             ip = _get_client_ip(self)
             allowed, retry_after = _rate_limiter.check(ip, limit=10, window_s=60)
             if not allowed:
@@ -2673,7 +2719,7 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         # V5.8 SECURITY_FORTRESS: /ghostrail/encrypted endpoint
         # Returns the AES-256-GCM encrypted blob (verification artifact).
         # Rate limited: 10 req/min per IP.
-        if self.path in ("/ghostrail/encrypted", "/ghostrail/encrypted/"):
+        if path in ("/ghostrail/encrypted", "/ghostrail/encrypted/"):
             ip = _get_client_ip(self)
             allowed, retry_after = _rate_limiter.check(ip, limit=10, window_s=60)
             if not allowed:
@@ -2713,7 +2759,7 @@ class TrackerHandler(SimpleHTTPRequestHandler):
         # V5.8 PREDICT_ENGINE_MARKOV: /predict endpoint
         # Returns the server-side Markov chain prediction.
         # Rate limited: 30 req/min per IP.
-        if self.path in ("/predict", "/predict/"):
+        if path in ("/predict", "/predict/"):
             ip = _get_client_ip(self)
             allowed, retry_after = _rate_limiter.check(ip, limit=30, window_s=60)
             if not allowed:
@@ -2744,7 +2790,7 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                 self._send_json({"status": "error", "error": str(e)}, status=500)
             return
 
-        if self.path in ("/points", "/points/"):
+        if path in ("/points", "/points/"):
             # V5.8 SECURITY_FORTRESS: Rate limit /points to 60 req/min per IP.
             # This is the primary data endpoint — without a cap, a malicious
             # client could hammer the server and exhaust the CSV reader.
@@ -2770,21 +2816,42 @@ class TrackerHandler(SimpleHTTPRequestHandler):
                     speed = sts.get("current_speed_kmh", 0) or 0
                     raw = {"lat": pts[-1].get("lat") if pts else None, "lng": pts[-1].get("lng") if pts else None, "speed_kmh": speed, "battery": _CURRENT_BATTERY, "accuracy": None, "address": _CURRENT_ADDRESS or "", "charging": None, "timestamp": _LAST_UPDATE.isoformat() if _LAST_UPDATE else None}
                     state = normalize_state(raw, None)
-                # Extract ghostrail_pts from state for frontend compatibility
+                # V6.11: ghostrail_pts from CSV (canonical, ISO-timestamped)
                 ghostrail_pts = []
-                if isinstance(state, dict) and "ghostrail" in state:
-                    ghostrail_pts = state["ghostrail"].get("points_24h", [])
-                # V5.8: include rate-limit headers so clients can see their quota
-                self._send_json({"points": pts, "stats": sts, "state": state, "ghostrail_pts": ghostrail_pts, "last_update": _LAST_UPDATE.isoformat() if _LAST_UPDATE else None, "_v58": {"rate_limit": "60/min", "encrypted_db": "/ghostrail/encrypted", "predict": "/predict"}, "_v60": {"cold_storage": "/api/archive", "archive_age_days": ARCHIVE_AGE_DAYS, "security_headers": ["HSTS", "CSP", "X-Frame-Options", "X-Content-Type-Options"], "cors": "strict"}})
+                try:
+                    csv_pts = read_all_points()  # 24h window, ISO-timestamped
+                    if csv_pts:
+                        ghostrail_pts = csv_pts
+                except Exception as _e:
+                    logger.warning("V6.11 ghostrail CSV read failed: %s", _e)
+                # Fallback: if CSV empty, use in-memory buffer
+                if not ghostrail_pts and isinstance(state, dict) and "ghostrail" in state:
+                    mem_pts = state["ghostrail"].get("points_24h", [])
+                    _now_iso = datetime.now(timezone.utc).isoformat()
+                    ghostrail_pts = [
+                        {**p, "timestamp": p.get("timestamp") or _now_iso}
+                        for p in mem_pts
+                    ]
+                # V6.11: include device_label in response for frontend Golden Signature
+                self._send_json({"points": pts, "stats": sts, "state": state, "ghostrail_pts": ghostrail_pts, "last_update": _LAST_UPDATE.isoformat() if _LAST_UPDATE else None, "device_label": _DEVICE_LABEL, "_v58": {"rate_limit": "60/min", "encrypted_db": "/ghostrail/encrypted", "predict": "/predict"}, "_v60": {"cold_storage": "/api/archive", "archive_age_days": ARCHIVE_AGE_DAYS, "security_headers": ["HSTS", "CSP", "X-Frame-Options", "X-Content-Type-Options"], "cors": "strict"}})
             except Exception as e:
                 logger.error("/points error: %s", e)
                 self._send_json({"status": "error", "error": str(e)}, status=500)
             return
 
-        if self.path in ("", "/"):
+        if path in ("", "/"):
             # Serve Next.js app at root (not /mapa.html redirect)
-            idx = BASE_DIR / "index.html"
-            if idx.exists():
+            # V6.11: try root index.html first, then nextjs-ui/index.html
+            idx_candidates = [
+                BASE_DIR / "index.html",
+                BASE_DIR / "nextjs-ui" / "index.html",
+            ]
+            idx = None
+            for candidate in idx_candidates:
+                if candidate.exists():
+                    idx = candidate
+                    break
+            if idx is not None:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 body = idx.read_bytes()
@@ -2795,13 +2862,38 @@ class TrackerHandler(SimpleHTTPRequestHandler):
             # Fallback to old mapa.html if index.html missing
             self.send_response(302); self.send_header("Location", "/mapa.html"); self.end_headers(); return
 
-        if self.path == "/cookies.html":
+        if path == "/cookies.html":
             self._serve_cookies_page(); return
+
+        # V6.11 STATIC_ASSET_FALLBACK: serve static assets from nextjs-ui/
+        # if not found in BASE_DIR (manifest.json, logo.svg, robots.txt, etc.)
+        requested = path.lstrip("/")
+        if requested and ".." not in requested:
+            root_candidate = BASE_DIR / requested
+            if not root_candidate.exists() or not root_candidate.is_file():
+                niu_candidate = BASE_DIR / "nextjs-ui" / requested
+                if niu_candidate.exists() and niu_candidate.is_file():
+                    try:
+                        body = niu_candidate.read_bytes()
+                        self.send_response(200)
+                        import mimetypes as _mt
+                        ctype, _ = _mt.guess_type(requested)
+                        if not ctype:
+                            ctype = "application/octet-stream"
+                        self.send_header("Content-Type", ctype)
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Cache-Control", "public, max-age=3600")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+                    except Exception as _e:
+                        logger.warning("V6.11 static fallback failed for %s: %s", path, _e)
 
         return super().do_GET()
 
     def do_POST(self):
-        if self.path in ("/api/cookies", "/cookies"):
+        path = self.path.split("?", 1)[0]  # V6.11: strip query string
+        if path in ("/api/cookies", "/cookies"):
             self._handle_cookies_upload(); return
         self.send_response(404); self.end_headers()
 
