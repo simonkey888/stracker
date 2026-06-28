@@ -1,0 +1,7 @@
+# tracker_map.py - requirements
+# V5.8 SECURITY_FORTRESS: cryptography package for AES-256-GCM encryption.
+# Falls back gracefully to plaintext CSV if not installed (dev mode).
+cryptography>=42.0.0
+
+# En Render se usa TRACKER_SKIP_PLAYWRIGHT=1 (no se necesita playwright).
+# Todos los demás imports son stdlib.
