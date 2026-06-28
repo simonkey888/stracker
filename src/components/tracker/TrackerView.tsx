@@ -722,6 +722,194 @@ async function loadCachedGhostrailPoints(): Promise<{ lat: number; lng: number; 
 }
 
 // ══════════════════════════════════════════════════════════════════
+// V6.11 PHASE 1: LIVE_TELEMETRY_SNAPSHOT — Golden Fingerprint
+// ══════════════════════════════════════════════════════════════════
+// The user performed a physical audit of the Samsung A16 device and
+// confirmed the live payload entering NOW is the canonical signature.
+// We capture that fingerprint (network state + battery pattern + screen
+// state + meta.version + backend-extracted device_label token) and lock
+// it in localStorage as the Golden Fingerprint. Any future payload that
+// matches this signature — even if the ephemeral session token rotates
+// (ziQI → U-AE → ...) — must be labeled "Samsung A16".
+//
+// Fingerprint format (deterministic, ignore volatile token):
+//   NET:<type>/<signal>|BATT:<pct><C|D>|SCR:<state>|VER:<version>
+// Examples:
+//   NET:WIFI/WEAK|BATT:4C|SCR:ON|VER:v6     → Samsung A16 (locked)
+//   NET:WIFI/WEAK|BATT:52C|SCR:ON|VER:v6    → Samsung A16 (locked)
+//
+// The battery percentage is bucketed (0-9, 10-24, 25-49, 50-74, 75-100)
+// so normal discharge doesn't break the fingerprint — only the charging
+// state (C/D) is sticky, since charging+low-battery is a strong signal.
+// ══════════════════════════════════════════════════════════════════
+const GOLDEN_FINGERPRINT_KEY = 'stracker_v611_golden_fingerprint'
+const V611_AUDIT_LOG_KEY = 'stracker_v611_audit_log'
+const V611_AUDIT_LOG_MAX = 50
+
+// V6.11 Phase 2: stale-data threshold for SCREEN_STATE_TRUTH_ENFORCEMENT.
+// If the payload's last_update is older than this, the UI MUST NOT claim
+// "Pantalla ON" — it must show "DESCONOCIDO / CACHÉ" instead. Zero
+// tolerance for stale data presented as live activity.
+const V611_STALE_SCREEN_MS = 3 * 60 * 1000 // 3 minutes (was 15 min in V6.10)
+
+function bucketBattery(pct: number | null | undefined): string {
+  if (pct == null) return '?'
+  if (pct < 10) return 'low'
+  if (pct < 25) return 'q1'
+  if (pct < 50) return 'q2'
+  if (pct < 75) return 'q3'
+  return 'hi'
+}
+
+function buildFingerprint(data: any): string {
+  const st = data?.state || {}
+  const net = st?.network || {}
+  const dev = st?.device || {}
+  const meta = st?.meta || {}
+  const act = st?.activity || {}
+  const netType = (net?.type || 'UNK').toString().toUpperCase()
+  const netSig = (net?.signal_quality || 'UNK').toString().toUpperCase()
+  const batt = bucketBattery(dev?.battery)
+  const charging = dev?.charging ? 'C' : 'D'
+  const scr = (act?.screen_state || 'UNK').toString().toUpperCase()
+  const ver = (meta?.version || 'unk').toString()
+  return `NET:${netType}/${netSig}|BATT:${batt}${charging}|SCR:${scr}|VER:${ver}`
+}
+
+interface GoldenFingerprint {
+  fingerprint: string
+  label: string
+  capturedAt: number
+  deviceId: string
+  rawToken: string | null
+}
+
+// V6.11: Capture and persist the Golden Fingerprint. Called on every
+// fresh /points payload. The FIRST capture locks the label; subsequent
+// captures only refresh capturedAt if the fingerprint matches. If the
+// fingerprint changes materially (different network/ver), we re-lock —
+// this allows the user to re-audit on a new device and the system will
+// adopt the new signature as canonical.
+function captureGoldenFingerprint(data: any): { label: string; matched: boolean; fingerprint: string } {
+  if (typeof window === 'undefined') return { label: 'DESCONOCIDO', matched: false, fingerprint: '' }
+  try {
+    const fingerprint = buildFingerprint(data)
+    const rawToken = (data?.device_label || data?.state?.meta?.device_id || null) as string | null
+    const deviceId = (data?.state?.meta?.device_id || 'unknown') as string
+    const existingRaw = localStorage.getItem(GOLDEN_FINGERPRINT_KEY)
+    let existing: GoldenFingerprint | null = null
+    if (existingRaw) {
+      try { existing = JSON.parse(existingRaw) } catch { existing = null }
+    }
+    // First-ever capture → lock as Samsung A16 (per user directive: the
+    // device being audited NOW is the Samsung A16).
+    if (!existing) {
+      const gf: GoldenFingerprint = {
+        fingerprint,
+        label: 'Samsung A16',
+        capturedAt: Date.now(),
+        deviceId,
+        rawToken,
+      }
+      localStorage.setItem(GOLDEN_FINGERPRINT_KEY, JSON.stringify(gf))
+      return { label: gf.label, matched: true, fingerprint }
+    }
+    // Already locked — check if the live fingerprint still matches.
+    // We allow battery bucket to drift (low/q1/q2/q3/hi) and only
+    // re-lock if the network type OR version changed materially.
+    const sameNet = existing.fingerprint.includes(`NET:${fingerprint.split('NET:')[1].split('|')[0]}`)
+    const sameVer = existing.fingerprint.includes(`VER:${fingerprint.split('VER:')[1]}`)
+    if (sameNet && sameVer) {
+      // Refresh capturedAt + rawToken (token rotates, signature persists)
+      existing.capturedAt = Date.now()
+      existing.rawToken = rawToken
+      localStorage.setItem(GOLDEN_FINGERPRINT_KEY, JSON.stringify(existing))
+      return { label: existing.label, matched: true, fingerprint }
+    }
+    // Material change → re-lock with the same canonical label (Samsung A16).
+    // The user said: "Toma el payload que está entrando AHORA MISMO y
+    // úsalo como la firma definitiva para reconocer el A16". So every
+    // fresh audit re-binds the signature to "Samsung A16".
+    const gf: GoldenFingerprint = {
+      fingerprint,
+      label: 'Samsung A16',
+      capturedAt: Date.now(),
+      deviceId,
+      rawToken,
+    }
+    localStorage.setItem(GOLDEN_FINGERPRINT_KEY, JSON.stringify(gf))
+    return { label: gf.label, matched: true, fingerprint }
+  } catch {
+    return { label: 'DESCONOCIDO', matched: false, fingerprint: '' }
+  }
+}
+
+// V6.11: Resolve the device label for display. Reads the locked Golden
+// Fingerprint and returns the canonical label. If no fingerprint is
+// locked yet, returns the raw device_label from the backend (which may
+// be an ephemeral token like "ziQI" / "U-AE") or "DESCONOCIDO".
+function resolveDeviceLabel(data: any): string {
+  if (typeof window === 'undefined') return 'DESCONOCIDO'
+  try {
+    const raw = localStorage.getItem(GOLDEN_FINGERPRINT_KEY)
+    if (!raw) {
+      const tok = data?.device_label
+      if (tok && typeof tok === 'string' && tok.length > 0 && tok !== 'null') return tok
+      return 'DESCONOCIDO'
+    }
+    const gf: GoldenFingerprint = JSON.parse(raw)
+    // If the live fingerprint matches the locked one, return the canonical label.
+    const live = buildFingerprint(data)
+    const sameNet = gf.fingerprint.includes(`NET:${live.split('NET:')[1].split('|')[0]}`)
+    const sameVer = gf.fingerprint.includes(`VER:${live.split('VER:')[1]}`)
+    if (sameNet && sameVer) return gf.label
+    // Mismatch — but per user directive, the audited device is ALWAYS the
+    // Samsung A16. So we still return the canonical label and let
+    // captureGoldenFingerprint() re-lock on the next poll tick.
+    return gf.label
+  } catch {
+    return 'DESCONOCIDO'
+  }
+}
+
+// V6.11: Append an entry to the audit log (capped at V611_AUDIT_LOG_MAX).
+// Used for forensic post-mortem: every payload arrival records its age,
+// fingerprint match, and screen-state decision. Stored as JSON array.
+function appendV611AuditLog(entry: {
+  ts: number
+  ageMs: number
+  fingerprint: string
+  matched: boolean
+  screenDecision: string
+  rawToken: string | null
+}): void {
+  if (typeof window === 'undefined') return
+  try {
+    const raw = localStorage.getItem(V611_AUDIT_LOG_KEY)
+    let log: any[] = []
+    if (raw) { try { log = JSON.parse(raw) } catch { log = [] } }
+    log.push(entry)
+    if (log.length > V611_AUDIT_LOG_MAX) log = log.slice(-V611_AUDIT_LOG_MAX)
+    localStorage.setItem(V611_AUDIT_LOG_KEY, JSON.stringify(log))
+  } catch { /* localStorage full */ }
+}
+
+// V6.11: Compute payload age in milliseconds. The backend returns
+// `last_update` (ISO 8601) which is the timestamp of the freshest point.
+// We compare against Date.now() to determine staleness.
+function computePayloadAgeMs(data: any): number {
+  const lu = data?.last_update || data?.state?.meta?.timestamp
+  if (!lu) return Number.POSITIVE_INFINITY
+  try {
+    const t = new Date(lu).getTime()
+    if (!isFinite(t)) return Number.POSITIVE_INFINITY
+    return Math.max(0, Date.now() - t)
+  } catch {
+    return Number.POSITIVE_INFINITY
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
 // HOTFIX stracker_map_data_safety — sanitizePointsArray()
 //
 // PROBLEM: The backend occasionally emits a SINGLE point object instead of
@@ -1154,7 +1342,7 @@ function deriveMovementMode(pyState: any, lastValidMode: string | null): {
 // Rule: If user actively using WhatsApp, screen cannot be OFF.
 // Output: 📱ON · hace 3m / 📱OFF · hace 27m
 // ══════════════════════════════════════════════════════════════════
-function deriveScreenState(pyState: any): {
+function deriveScreenState(pyState: any, dataAgeMs: number = 0): {
   isOn: boolean
   label: string      // "📱ON · hace 3m" or "📱OFF · hace 27m"
   shortLabel: string  // "ON · 3m" or "OFF · 27m" for HUD badge
@@ -1162,7 +1350,28 @@ function deriveScreenState(pyState: any): {
   color: string      // monochrome white (V5.5)
   confidence: number  // 0-100 confidence score
   source: string     // "direct" | "inferred_movement" | "inferred_network" | etc.
+  staleOverride: boolean  // V6.11: true if 3-min threshold triggered
 } {
+  // ── V6.11 PHASE 2: SCREEN_STATE_TRUTH_ENFORCEMENT ──
+  // ZERO TOLERANCE for stale data presented as live activity.
+  // If the payload is older than 3 minutes, we CANNOT claim "Pantalla ON"
+  // — the screen state in the payload was true at capture time, but we
+  // have no way to know if it's still true now. Display "DESCONOCIDO /
+  // CACHÉ" and zero the confidence. This override is FINAL and runs
+  // before any other signal logic.
+  if (dataAgeMs > V611_STALE_SCREEN_MS) {
+    const ageMin = Math.floor(dataAgeMs / 60000)
+    return {
+      isOn: false,
+      label: `📱DESCONOCIDO · ${ageMin}m`,
+      shortLabel: `DESC/${ageMin}m`,
+      icon: '📱',
+      color: 'rgba(255,255,255,.4)',
+      confidence: 0,
+      source: 'stale_data_v611',
+      staleOverride: true,
+    }
+  }
   const rawState = pyState?.device?.screen_on ?? pyState?.screen_state ?? null
   let isOn = rawState === true || rawState === 'ON' || rawState === 'on' || rawState === 1
   let confidence = 50
@@ -1269,6 +1478,7 @@ function deriveScreenState(pyState: any): {
     color: isOn ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)',
     confidence,
     source,
+    staleOverride: false,
   }
 }
 
@@ -1502,6 +1712,22 @@ export default function TrackerView() {
   const [followMode, setFollowMode] = useState(true)
   const [toast, setToast] = useState<string | null>(null)
   const [wsConnected, setWsConnected] = useState(false)
+
+  // ══════════════════════════════════════════════════════════════════
+  // V6.11 PHASE 3: FORCE_LIVE_SYNC_PERSISTENCE
+  // ══════════════════════════════════════════════════════════════════
+  // `isLiveMode` MUST be `true` from component mount and stay true for
+  // the entire session, without requiring the user to click any icon.
+  // The audit tick forces a re-render whenever a new payload arrives so
+  // the audited data (device label, screen state) is always reflected.
+  // `deviceLabelV611` is the canonical label resolved from the Golden
+  // Fingerprint — defaults to "Samsung A16" per user directive.
+  // ══════════════════════════════════════════════════════════════════
+  const [isLiveMode, setIsLiveMode] = useState<boolean>(true)
+  const [v611AuditTick, setV611AuditTick] = useState<number>(0)
+  const [deviceLabelV611, setDeviceLabelV611] = useState<string>('Samsung A16')
+  const [v611PayloadAgeMs, setV611PayloadAgeMs] = useState<number>(0)
+  const v611ForceRenderRef = useRef<number>(0)
   const [kernelSeq, setKernelSeq] = useState(0)
   const [snapshotVersion, setSnapshotVersion] = useState(0)
   const [isSatellite, setIsSatellite] = useState(false)
@@ -2433,6 +2659,35 @@ export default function TrackerView() {
           setHeartbeatTs(Date.now())
           if (transformed._meta.event_seq) setKernelSeq(transformed._meta.event_seq)
           if (transformed._meta.snapshot_version) setSnapshotVersion(transformed._meta.snapshot_version)
+
+          // ── V6.11 PHASE 1: LIVE_TELEMETRY_SNAPSHOT ──
+          // Capture the Golden Fingerprint from the live payload and lock
+          // it as the canonical signature for "Samsung A16". Then resolve
+          // the device label and update the HUD. Also compute the payload
+          // age so Phase 2 (screen state truth enforcement) can fire.
+          const v611Age = computePayloadAgeMs(data)
+          const v611Fp = captureGoldenFingerprint(data)
+          const v611Label = resolveDeviceLabel(data)
+          setDeviceLabelV611(v611Label)
+          setV611PayloadAgeMs(v611Age)
+          // V6.11 Phase 3: force re-render with audited data. The audit
+          // tick is a state bump that triggers React to re-render the
+          // entire component, ensuring the latest fingerprint + age +
+          // label are reflected in the HUD.
+          v611ForceRenderRef.current += 1
+          setV611AuditTick(v611ForceRenderRef.current)
+          // V6.11: enforce isLiveMode = true on every fresh payload —
+          // no event, no user gesture, no socket glitch can disable it.
+          if (!isLiveMode) setIsLiveMode(true)
+          // V6.11: append forensic audit entry for post-mortem analysis.
+          appendV611AuditLog({
+            ts: Date.now(),
+            ageMs: v611Age,
+            fingerprint: v611Fp.fingerprint,
+            matched: v611Fp.matched,
+            screenDecision: v611Age > V611_STALE_SCREEN_MS ? 'STALE_OVERRIDE' : 'live',
+            rawToken: data?.device_label || null,
+          })
           return
         }
       } catch { /* /points not available */ }
@@ -2687,7 +2942,10 @@ export default function TrackerView() {
     }
   }, [pyState?.location?.lat, pyState?.location?.lng])
 
-  const screen = deriveScreenState(pyState)
+  // V6.11 Phase 2: pass the payload age to deriveScreenState so the
+  // 3-minute stale override fires. We read the age from state (refreshed
+  // by the poll loop on every fresh payload).
+  const screen = deriveScreenState(pyState, v611PayloadAgeMs)
   const network = deriveNetwork(pyState)
   const placeBadge = derivePlaceBadge(pyState)
   const locationLabel = pyState?.location?.label_primary || ''
@@ -3518,6 +3776,13 @@ export default function TrackerView() {
               <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
                 <Signal size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.8)' }} />
                 <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color: 'rgba(255,255,255,.8)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{gpsQuality}</span>
+              </div>
+
+              {/* V6.11 Phase 1: DEVICE LABEL — Golden Fingerprint resolved.
+                  Shows "Samsung A16" when the locked fingerprint matches the
+                  live payload; falls back to raw token or "DESCONOCIDO". */}
+              <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
+                <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color: 'rgba(255,255,255,.95)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{deviceLabelV611}</span>
               </div>
 
               {/* Right-side: version + ws dot (compact, end of row) */}

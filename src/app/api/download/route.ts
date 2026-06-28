@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
+// Required for output: export — prevents Next.js from trying to prerender this API route.
+export const dynamic = 'force-static'
+
 export async function GET() {
   try {
     const filePath = join(process.cwd(), 'download', 'tracker.zip')

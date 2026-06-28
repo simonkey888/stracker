@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Sunrise } from 'lucide-react'
 
 /**
  * MapStyleInyector — MC_8_02 (stracker_v8_hyper_premium)
@@ -149,13 +148,12 @@ export function MapStyleInyector({ now, showLabel = false }: MapStyleInyectorPro
             left: '50%',
             transform: 'translateX(-50%)',
             background: 'rgba(9,9,11,.6)',
-            // V6.2 Apple Maps 4000 — backdrop-blur-xl (24px) per spec.
-            backdropFilter: 'blur(24px) saturate(180%)',
-            WebkitBackdropFilter: 'blur(24px) saturate(180%)',
+            backdropFilter: 'blur(16px) saturate(180%)',
+            WebkitBackdropFilter: 'blur(16px) saturate(180%)',
             border: '1px solid rgba(255,255,255,.08)',
           }}
         >
-          <Sunrise size={10} strokeWidth={1.75} style={{ color: 'rgba(255,255,255,.6)' }} />
+          <span style={{ fontSize: 9 }}>🌅</span>
           <span
             className="micro-telemetry"
             style={{ color: 'rgba(255,255,255,.6)' }}

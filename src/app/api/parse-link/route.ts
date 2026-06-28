@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import axios from 'axios'
 
+// Required for output: export — prevents Next.js from trying to prerender this API route.
+export const dynamic = 'force-static'
+
 // ════════════════════════════════════════════════════════════════
 // GOOGLE MAPS LINK PARSER — FULL PIPELINE
 // ════════════════════════════════════════════════════════════════

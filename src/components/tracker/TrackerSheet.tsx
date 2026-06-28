@@ -16,13 +16,10 @@ import { motion } from 'framer-motion'
  *   - Spring physics (framer-motion): stiffness 350, damping 30, mass 0.7
  *   - Backdrop blur on map intensifies as sheet expands (T5 magic #1).
  *
- * Desktop (>=768px): LEFT flex-dock panel (w-96).
- *   - position: relative — a flex sibling of the map area (NOT a floating overlay).
- *   - The root layout (TrackerView) is `flex flex-row-reverse` on desktop, so
- *     the sheet takes 384px on the LEFT and the map takes flex-1 on the RIGHT.
+ * Desktop (>=768px): LEFT floating panel (w-96).
+ *   - Fixed left-4 top-4 bottom-4, rounded-2xl, shadow-2xl.
  *   - Always "open" — no snap points.
- *   - Pin never hidden: the map's visible area is naturally clear of the sheet
- *     (no camera-offset hack needed — PIN_OFFSET_X is now 0).
+ *   - Map gets offset right so pin never hidden (handled in TrackerView).
  *
  * Invariants:
  *   - Sheet NEVER covers the pin (pin sits in viewport center, sheet is below).
@@ -39,7 +36,7 @@ interface TrackerSheetProps {
   onHeightChange?: (snap: SnapPoint) => void
   /** Called with drag progress 0..1 for backdrop blur sync (T5 magic #1). */
   onProgressChange?: (progress: number) => void
-  /** V9: external snap control — when set, overrides internal state. Used by clipboard button. */
+  /** V9: external snap control — when set, overrides internal state. Used by 📋 button. */
   externalSnap?: SnapPoint | null
 }
 
@@ -107,17 +104,32 @@ export function TrackerSheet({
     onProgressChange?.(progress)
   }, [effectiveSnap, onHeightChange, onProgressChange])
 
-  // V6.6 MAP_LIBERATION: the desktop LEFT flex-dock branch (V6.4) and the
-  // 9:16 absolute-anchored sheet (V6.5) have BOTH been removed. The dashboard
-  // is now a `position: fixed` OVERLAY on top of a full-viewport map:
-  //   - Mobile (<768px): full-width bottom sheet (left-0 right-0 bottom-0),
-  //     top-rounded corners, snap points (closed=38px / half=260px / full=82dvh).
-  //   - Desktop (>=768px): floating bottom-LEFT widget (~400px wide), rounded
-  //     all corners, 16px margins. The map's CENTER is never occluded.
-  // The snap points work identically on all viewports — the widget just gets
-  // constrained width on desktop so the map stays visible behind it.
+  // ── DESKTOP: left floating panel (w-96), always open ──
+  // V6.0 Apple Maps 4000 — 32px insets, rounded-[28px], shadow-2xl elevation.
+  if (!isMobile) {
+    return (
+      <div
+        className="fixed z-20 flex flex-col pointer-events-auto"
+        style={{
+          left: 'max(2rem, env(safe-area-inset-left, 2rem))',
+          top: 'max(2rem, env(safe-area-inset-top, 2rem))',
+          bottom: 'max(2rem, env(safe-area-inset-bottom, 2rem))',
+          width: 384, // w-96
+          background: 'rgba(10,10,10,.85)',
+          backdropFilter: 'blur(30px) saturate(180%)',
+          WebkitBackdropFilter: 'blur(30px) saturate(180%)',
+          border: '1px solid rgba(255,255,255,.05)',
+          borderRadius: 28, // V6.0: rounded-[28px] for expansive minimalism
+          boxShadow: '0 24px 64px rgba(0,0,0,.6), 0 8px 32px rgba(0,0,0,.5)',
+          overflow: 'hidden',
+        }}
+      >
+        {children}
+      </div>
+    )
+  }
 
-  // ── BOTTOM SHEET (all viewports) with pixel-precise snap points ──
+  // ── MOBILE: bottom sheet with pixel-precise snap points ──
   const targetHeight = dragHeight != null ? dragHeight : getSnapHeightPx(effectiveSnap)
   // Clamp to [closed, full]
   const closedH = getSnapHeightPx('closed')
@@ -157,35 +169,20 @@ export function TrackerSheet({
     setSnap(prev => prev === 'closed' ? 'half' : prev === 'half' ? 'full' : 'closed')
   }
 
-  // V6.6 MAP_LIBERATION: TrackerSheet is now `position: fixed` (was `absolute`
-  // anchoring to the deleted 9:16 column). On MOBILE it stays a full-width
-  // bottom sheet (left-0 right-0 bottom-0, top-rounded corners). On DESKTOP
-  // it docks to the bottom-LEFT as a floating Apple Maps style widget:
-  // constrained width (~400px), rounded ALL corners, 16px margins from the
-  // viewport edges. The map's CENTER is never occluded on desktop because the
-  // widget sits in the corner with the map filling 100% of the viewport.
-  const desktopWidget = !isMobile
-  const desktopWidth = 400 // px — Apple Maps widget reference width
-
   return (
     <motion.div
       ref={sheetRef}
-      className={`fixed z-30 pointer-events-auto flex flex-col ${desktopWidget ? 'left-4 right-auto' : 'left-0 right-0'}`}
+      className="fixed z-20 left-0 right-0 pointer-events-auto flex flex-col"
       style={{
-        bottom: desktopWidget ? 16 : 0,
-        width: desktopWidget ? desktopWidth : undefined,
-        maxWidth: desktopWidget ? 'calc(100vw - 32px)' : undefined,
+        bottom: 0,
         height: clampedHeight,
         background: 'rgba(10,10,10,.85)',
         backdropFilter: 'blur(30px) saturate(180%)',
         WebkitBackdropFilter: 'blur(30px) saturate(180%)',
         borderTop: '1px solid rgba(255,255,255,.05)',
         // V6.0: rounded-[28px] top corners for Apple Maps 4000 expansive minimalism.
-        // V6.6: desktop widget rounds ALL corners (floating card, not bottom-docked sheet).
-        borderRadius: desktopWidget ? '24px' : '28px 28px 0 0',
-        boxShadow: desktopWidget
-          ? '0 12px 40px rgba(0,0,0,.6), 0 24px 80px rgba(0,0,0,.5)'
-          : '0 -8px 32px rgba(0,0,0,.5), 0 -24px 64px rgba(0,0,0,.45)',
+        borderRadius: '28px 28px 0 0',
+        boxShadow: '0 -8px 32px rgba(0,0,0,.5), 0 -24px 64px rgba(0,0,0,.45)',
         paddingBottom: 'env(safe-area-inset-bottom, 0px)',
       }}
       transition={SPRING}

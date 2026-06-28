@@ -1,6 +1,11 @@
 import { db } from '@/lib/db'
 import { NextRequest, NextResponse } from 'next/server'
 
+
+export function generateStaticParams() { return [] }
+// Required for output: export — prevents Next.js from trying to prerender this API route.
+export const dynamic = 'force-static'
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }

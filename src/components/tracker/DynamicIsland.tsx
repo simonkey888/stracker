@@ -10,8 +10,8 @@ import type { ComponentType } from 'react'
 
 // FIX_3 (stracker_hotfix_ui_v8.1): token -> lucide-react icon maps.
 // The movementIcon prop now receives a token string ('walk'|'car'|'bus'|
-// 'sleep'|'still') which we resolve to a vector icon here. Alert glyphs
-// (info / warning / critical) are likewise replaced with lucide icons.
+// 'sleep'|'still') which we resolve to a vector icon here. Alert emojis
+// (ℹ️⚠️🛑) are likewise replaced with lucide icons.
 type LucideCmp = typeof Car
 const MOVEMENT_ICON: Record<string, LucideCmp> = {
   walk: Footprints,
@@ -131,7 +131,7 @@ export function DynamicIsland({
 
   return (
     <div
-      className="absolute z-[9999] pointer-events-none flex justify-center"
+      className="fixed z-[9999] pointer-events-none flex justify-center"
       style={{
         // V6.0 Apple Maps 4000 — expansive insets: 16px mobile, 32px desktop.
         top: isMobile
@@ -139,10 +139,8 @@ export function DynamicIsland({
           : 'max(2rem, env(safe-area-inset-top, 2rem))',
         left: '50%',
         transform: 'translateX(-50%)',
-        // RA30: `absolute` within the map-area flex sibling. maxWidth is now
-        // relative to the map area (not viewport). Leave room for FloatingControls
-        // (top-right, 44px + 32px margin) + breathing room on each side.
-        maxWidth: isMobile ? 'calc(100% - 130px)' : 'calc(100% - 110px)',
+        // Leave room for FloatingControls (top-right) + desktop left panel
+        maxWidth: isMobile ? 'calc(100vw - 130px)' : 'calc(100vw - 480px)',
       }}
     >
       <motion.div
@@ -242,7 +240,7 @@ export function DynamicIsland({
               >
                 {movementLabel}
               </span>
-              <span style={{ color: 'rgba(255,255,255,.2)', fontSize: 13 }}>|</span>
+              <span style={{ color: 'rgba(255,255,255,.2)', fontSize: 10 }}>|</span>
               <span
                 className="truncate tabular-nums"
                 style={{

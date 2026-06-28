@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 
+// Required for output: export — prevents Next.js from trying to prerender this API route.
+export const dynamic = 'force-static'
+
 const STRACKER_DIR = '/home/z/my-project/stracker'
 
 const FILES = [

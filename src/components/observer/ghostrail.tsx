@@ -123,7 +123,7 @@ export default function Ghostrail({
         className="relative w-full h-[60px] flex items-center justify-center overflow-hidden rounded-sm"
         style={{ background: 'rgba(0,0,0,0.6)' }}
       >
-        <span className="text-[13px] font-mono tracking-[0.2em] text-zinc-600 select-none">
+        <span className="text-[10px] font-mono tracking-[0.2em] text-zinc-600 select-none">
           SIN HISTORIAL
         </span>
         <div className="absolute top-1/2 left-0 right-0 h-px bg-white/5" />

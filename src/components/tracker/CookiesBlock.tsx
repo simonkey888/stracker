@@ -326,7 +326,7 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
           style={{
             height: iconBtnSize,
             color: statusColor,
-            fontSize: 'clamp(13px, 2vw, 17px)',
+            fontSize: 'clamp(9px, 2vw, 11px)',
             fontWeight: 700,
           }}
           title={`${statusLabel}${status && status.min_expiration != null ? ` · expira ${formatExpiration(status.min_expiration)}` : ''}`}
@@ -343,7 +343,7 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
           style={{
             height: iconBtnSize,
             color: statusColor,
-            fontSize: 'clamp(12px, 1.8vw, 16px)',
+            fontSize: 'clamp(8px, 1.8vw, 10px)',
             fontWeight: 600,
             overflow: 'hidden',
             whiteSpace: 'nowrap',
@@ -353,7 +353,7 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
         >
           <span className="truncate">{statusLabel}</span>
           {status && status.min_expiration != null && (
-            <span className="flex items-center gap-0.5 flex-shrink-0" style={{ fontSize: 12, opacity: 0.75 }}>
+            <span className="flex items-center gap-0.5 flex-shrink-0" style={{ fontSize: 9, opacity: 0.75 }}>
               <Hourglass size={9} strokeWidth={1.5} />
               <span className="tabular-nums">{formatExpiration(status.min_expiration)}</span>
             </span>
@@ -391,11 +391,11 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
           className={`mt-2 rounded-2xl p-3 ${glassPill}`}
           style={{ animation: 'cookiesExpand 150ms ease-out' }}
         >
-          <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 13, color: 'rgba(255,255,255,.55)', fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+          <div className="flex items-center gap-1.5 mb-2" style={{ fontSize: 10, color: 'rgba(255,255,255,.55)', fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
             <Sparkles size={11} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.7)' }} />
             <span>Sesión Google</span>
           </div>
-          <ol className="space-y-1 mb-2.5" style={{ fontSize: 'clamp(13px, 1.9vw, 17px)', color: 'rgba(255,255,255,.7)', lineHeight: 1.5 }}>
+          <ol className="space-y-1 mb-2.5" style={{ fontSize: 'clamp(9px, 1.9vw, 11px)', color: 'rgba(255,255,255,.7)', lineHeight: 1.5 }}>
             <li className="flex gap-1.5"><span className="tabular-nums" style={{ color: 'rgba(255,255,255,.5)' }}>1.</span><span>Abrí Google Maps y copiá las cookies (DevTools o extensión).</span></li>
             <li className="flex gap-1.5"><span className="tabular-nums" style={{ color: 'rgba(255,255,255,.5)' }}>2.</span><span>Volvé a esta pestaña — la auto-detección las importa solo.</span></li>
             <li className="flex gap-1.5"><span className="tabular-nums" style={{ color: 'rgba(255,255,255,.5)' }}>3.</span><span>O pegalas manualmente con el botón Expandir de abajo.</span></li>
@@ -411,7 +411,7 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
                 background: 'rgba(255,255,255,.08)',
                 border: '1px solid rgba(255,255,255,.15)',
                 color: 'rgba(255,255,255,.9)',
-                fontSize: 13,
+                fontSize: 10,
                 fontWeight: 500,
                 letterSpacing: '0.04em',
                 cursor: 'pointer',
@@ -472,7 +472,7 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
           </div>
           <div
             className="flex justify-between mt-0.5"
-            style={{ fontSize: 13, color: 'rgba(255,255,255,.3)', fontFamily: 'ui-monospace, monospace' }}
+            style={{ fontSize: 8, color: 'rgba(255,255,255,.3)', fontFamily: 'ui-monospace, monospace' }}
           >
             <span>TTL</span>
             <span style={{ color: ttlColor }}>{formatExpiration(minExp)}</span>
@@ -492,7 +492,7 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
           <div
             className={`mb-1.5 px-2 py-1 rounded-xl flex items-center gap-1.5 ${glassPill}`}
             style={{
-              fontSize: 'clamp(12px, 1.8vw, 16px)',
+              fontSize: 'clamp(8px, 1.8vw, 10px)',
               color: 'rgba(255,255,255,.7)',
             }}
           >
@@ -511,7 +511,7 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
               border: '1px solid rgba(255,255,255,.05)',
               color: 'rgba(255,255,255,.8)',
               fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-              fontSize: 'clamp(13px, 1.8vw, 17px)',
+              fontSize: 'clamp(9px, 1.8vw, 11px)',
               lineHeight: 1.4,
             }}
             spellCheck={false}
@@ -526,7 +526,7 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
               background: importing ? 'rgba(255,255,255,.15)' : 'rgba(255,255,255,.08)',
               border: '1px solid rgba(255,255,255,.2)',
               color: 'rgba(255,255,255,.9)',
-              fontSize: 'clamp(14px, 2.2vw, 18px)',
+              fontSize: 'clamp(10px, 2.2vw, 12px)',
               fontWeight: 600,
               cursor: importing ? 'wait' : 'pointer',
               opacity: (!pasteValue.trim() && !importing) ? 0.4 : 1,
@@ -540,7 +540,7 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
             <div
               className={`mt-1.5 p-2 rounded-xl ${glassPill}`}
               style={{
-                fontSize: 'clamp(12px, 1.8vw, 16px)',
+                fontSize: 'clamp(8px, 1.8vw, 10px)',
                 lineHeight: 1.5,
               }}
             >
@@ -566,7 +566,7 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
               className={`mt-1.5 p-2 rounded-xl flex items-center gap-1.5 ${glassPill}`}
               style={{
                 color: 'rgba(255,255,255,.7)',
-                fontSize: 'clamp(12px, 1.8vw, 16px)',
+                fontSize: 'clamp(8px, 1.8vw, 10px)',
               }}
             >
               <CircleX size={12} strokeWidth={1.5} />

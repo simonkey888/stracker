@@ -9,17 +9,12 @@ import { Layers, Compass, Eye, EyeOff } from 'lucide-react'
  * stacked, top-right. Completely isolated from the bottom panel hierarchy.
  *
  * Buttons (per directive controles_flotantes_mapa):
- *   - toggle_satellite — Lucide `Layers`  ("Capas — Satélite")
- *   - recenter_pin     — Lucide `Compass` ("Centrar en pin")
- *   - toggle_ghostrail — Lucide `Eye`/`EyeOff` ("GhostRail")
+ *   - toggle_satellite — Lucide `Layers`  ("Modo Satélite")
+ *   - recenter_pin     — Lucide `Compass` ("Centrar Objetivo")
+ *   - toggle_ghostrail — Lucide `Eye`/`EyeOff` ("Ocultar Rastro")
  *
  * Visuals: 44px rounded-full glass, bg-[#0a0a0a]/85 backdrop-blur,
  * border-white/5, shadow-2xl elevation, liquid cubic-bezier transitions.
- *
- * RA30 DESKTOP_LAYOUT_DOCKING: `position: absolute` (was `fixed`) — positioned
- * relative to the map-area flex sibling, not the viewport. On desktop the map
- * area is the right portion (flex-1), so `right-4 md:right-8` is 16/32px from
- * the map area's right edge. The controls stay clear of the LEFT-docked sheet.
  */
 interface FloatingControlsProps {
   isSatellite: boolean
@@ -75,15 +70,15 @@ export function FloatingControls({
 }: FloatingControlsProps) {
   return (
     <div
-      className="absolute z-30 top-24 md:top-32 right-4 md:right-8 flex flex-col gap-3 md:gap-4 pointer-events-auto"
+      className="fixed z-30 top-24 md:top-32 right-4 md:right-8 flex flex-col gap-3 md:gap-4 pointer-events-auto"
     >
-      <GlassButton active={isSatellite} title="Capas — Satélite" onClick={onToggleSatellite}>
+      <GlassButton active={isSatellite} title="Modo Satélite" onClick={onToggleSatellite}>
         <Layers size={18} strokeWidth={1.5} />
       </GlassButton>
-      <GlassButton title="Centrar en pin" onClick={onCenter}>
+      <GlassButton title="Centrar Objetivo" onClick={onCenter}>
         <Compass size={18} strokeWidth={1.5} />
       </GlassButton>
-      <GlassButton active={ghostVisible} title="GhostRail" onClick={onToggleGhost}>
+      <GlassButton active={ghostVisible} title="Ocultar Rastro" onClick={onToggleGhost}>
         {ghostVisible ? <Eye size={18} strokeWidth={1.5} /> : <EyeOff size={18} strokeWidth={1.5} />}
       </GlassButton>
     </div>

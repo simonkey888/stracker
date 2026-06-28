@@ -127,18 +127,6 @@
 }
 
 /* ════════════════════════════════════════════════════════════════ */
-/* RA24 — DEBUG-HIDDEN UTILITY                                     */
-/* ════════════════════════════════════════════════════════════════ */
-/* Per stracker_production_sanitization directive: any debug artifact
-   (crosshair, raw-coord overlay, test rectangle) must be forced
-   `display: none` in production via this utility class. Apply
-   `.debug-hidden` to any element that should NEVER render in
-   production. Code is preserved; only the visual is suppressed.    */
-.debug-hidden {
-  display: none !important;
-}
-
-/* ════════════════════════════════════════════════════════════════ */
 /* V2 — APPLE MAPS MICRO-MOTION ANIMATIONS                         */
 /* ════════════════════════════════════════════════════════════════ */
 /* Philosophy: Apple Maps = subtle, purposeful, never flashy        */
@@ -334,11 +322,10 @@ input:focus {
   border-radius: 2px;
 }
 
-/* V5.5: micro-telemetry — monochrome white at 50% (was zinc-400).
-   RA26: bumped 10px→11px for legibility (was unreadable on mobile). */
+/* V5.5: micro-telemetry — monochrome white at 50% (was zinc-400). */
 .micro-telemetry {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   font-weight: 500;
@@ -426,38 +413,6 @@ input:focus {
   transition: transform 800ms cubic-bezier(0.32, 0.72, 0, 1),
               filter 300ms ease;
 }
-
-/* ════════════════════════════════════════════════════════════════ */
-/* V6.5 UI_VISUAL_RESET — native dark mode restored                    */
-/* ════════════════════════════════════════════════════════════════ */
-/* V6.4 applied invert(0.92) hue-rotate(180deg) to fake a dark map from
-   the light CartoDB tiles. V6.5 REMOVES that aggressive filter — the
-   map now uses the native dark CartoDB tiles (dark_all) directly, which
-   gives true deep blacks + high-contrast grays without the color-wonky
-   inversion artifacts. The tile-pane filter block is intentionally empty
-   here; the inline <style> in TrackerView also had the invert filter and
-   has been cleaned up to only carry blur+brightness (sheet-progress sync).
-   No CSS filter on .leaflet-tile-pane anymore. */
-
-/* V6.5 neonPinPulse — red pin halo. Color changed from neon green
-   (#00FF00) to bright red (#FF0000) per directive. The halo uses a soft
-   red (rgba(255,0,0,0.3) baseline) so the pulse reads as an alert beacon
-   without blowing out the map. Period 1.4s preserved. Three-layer halo
-   (14px + 28px + 56px) for depth + "impossible to lose" outer ring. */
-@keyframes neonPinPulse {
-  0%, 100% {
-    box-shadow: 0 0 14px rgba(255,0,0,0.85),
-                0 0 28px rgba(255,0,0,0.45),
-                0 0 56px rgba(255,0,0,0.20),
-                0 2px 8px rgba(0,0,0,0.6);
-  }
-  50% {
-    box-shadow: 0 0 22px rgba(255,0,0,1),
-                0 0 44px rgba(255,0,0,0.65),
-                0 0 88px rgba(255,0,0,0.35),
-                0 2px 8px rgba(0,0,0,0.6);
-  }
-}
 /* When drive mode is active, also shift the overlay pane slightly to
    reinforce the parallax (routes tilt with the road). */
 .leaflet-overlay-pane {
@@ -477,14 +432,12 @@ input:focus {
   transition: opacity 320ms ease-in 400ms;
 }
 
-/* V6.7 GHOST_TRAIL_VISIBILITY: glow color switched from pure white to blue
-   (rgba(59,130,246,.7)) to match the new #3b82f6 trail per directive
-   "color: '#3b82f6' para máxima visibilidad". The V6.5 white trail is
-   superseded — a blue trail reads more clearly against both the dark
-   CartoDB basemap and the ArcGIS satellite imagery. */
+/* AT_3: comet-tail — a subtle glow filter applied to the leading segment
+   of the GhostTrail polyline for the "long-exposure light streak" effect.
+   Applied via a CSS class on the newest polyline segment. */
 .ghost-comet-head {
-  filter: drop-shadow(0 0 5px rgba(59, 130, 246, 0.7))
-          drop-shadow(0 0 12px rgba(59, 130, 246, 0.35));
+  filter: drop-shadow(0 0 4px rgba(10, 132, 255, 0.55))
+          drop-shadow(0 0 8px rgba(10, 132, 255, 0.25));
 }
 
 /* LAYER_01 (stracker_v5.2_rev): Ghostrail layer z-index enforcement.
@@ -516,30 +469,6 @@ input:focus {
   pointer-events: auto !important;
 }
 
-/* RA30 MOBILE_GHOST_TRAIL_RECOVERY + V6.4 GHOST_PERSISTENCE: ensure the
-   GhostTrail polyline is ALWAYS rendered on ALL breakpoints. The render
-   gate in TrackerView (ghostVisible && routedTrailPts.length >= 2) is
-   already decoupled from live signal — it renders purely on historical
-   data availability. This CSS is defensive insurance: even if a future
-   breakpoint rule or ancestor style hides the overlay pane, the GhostTrail
-   stays visible on mobile AND desktop. The trail must be visible "sí o sí"
-   per the directive — the map is never blind when the CSV history has
-   points within the 24h window. V6.4 lifts the previous mobile-only
-   media query to all viewports so desktop also gets the guarantee. */
-.leaflet-pane.leaflet-overlay-pane {
-  display: block !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-  z-index: 400 !important;
-}
-.leaflet-pane.leaflet-overlay-pane svg,
-.leaflet-pane.leaflet-overlay-pane svg path,
-.leaflet-pane.leaflet-overlay-pane path {
-  display: block !important;
-  visibility: visible !important;
-  pointer-events: none !important;
-}
-
 /* FIX_2 (stracker_hotfix_ui_v8.1): LiveMarker pin visibility hardening.
    The LiveMarker divIcon uses this explicit className so that no inherited
    `display:none` / `opacity:0` / `visibility:hidden` from any Leaflet pane
@@ -569,22 +498,4 @@ input:focus {
 @keyframes island-enter {
   from { opacity: 0; transform: translateY(-8px) scale(0.94); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-/* V6.8 JITTER_AWARENESS_UI — activity pulse for the GPS Jitter badge.
-   Plays ONLY when the device is detected as in-place active (coordinates
-   fluctuating within <10m radius). The pulse cycle is 1.4s, matching the
-   Live Mode accent rhythm so the operator reads "active but static" at a
-   glance. Color: Apple blue (#0a84ff) to match the Live Mode indicator. */
-@keyframes v68JitterPulse {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-    box-shadow: 0 0 6px rgba(10,132,255,0.7);
-  }
-  50% {
-    opacity: 0.55;
-    transform: scale(0.7);
-    box-shadow: 0 0 10px rgba(10,132,255,0.9);
-  }
 }

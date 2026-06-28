@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { haversine } from '@/lib/observer-types'
 
+// Required for output: export — prevents Next.js from trying to prerender this API route.
+export const dynamic = 'force-static'
+
 export async function POST(req: NextRequest) {
   const body = await req.json()
   const { entityId, lat, lng, battery, source } = body

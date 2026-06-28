@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server'
 
+// Required for output: export — prevents Next.js from trying to prerender this API route.
+export const dynamic = 'force-static'
+
 // Sources are not a separate model in the current schema.
 // The `source` field is a string on Sighting (e.g. "cloud", "simulation", "manual").
 // This route returns the distinct source values currently in use.

@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 
-// V6.5: required for static export — no static params to pre-render (API route).
+// Required for `output: export` — dynamic API routes must declare
+// generateStaticParams. Returning [] means no static paths are
+// pre-rendered; the route exists only at runtime via the Python backend.
 export function generateStaticParams() {
   return []
 }
+
+export const dynamic = 'force-static'
 
 export async function DELETE(
   _req: NextRequest,

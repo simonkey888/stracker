@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useCallback } from 'react'
-import { Brain, Check, Clipboard, Download } from 'lucide-react'
 
 /**
  * GeminiJsonViewer — Muestra el mega JSON de análisis con botón "Copiar para Gemini".
@@ -88,19 +87,19 @@ export function GeminiJsonViewer() {
         }}
       >
         <div className="flex items-center gap-2 min-w-0">
-          <Brain size={20} strokeWidth={1.75} style={{ color: 'rgba(255,255,255,.85)' }} />
+          <span style={{ fontSize: 20 }}>🧠</span>
           <div className="min-w-0">
             <h1 className="font-bold text-sm truncate" style={{ letterSpacing: '-0.01em' }}>
               STRACKER — Análisis para Gemini
             </h1>
-            <p className="text-[13px] truncate" style={{ color: 'rgba(255,255,255,.45)' }}>
+            <p className="text-[10px] truncate" style={{ color: 'rgba(255,255,255,.45)' }}>
               Mega JSON pipeline · 10 problemas · 8 soluciones · 10 mejoras atómicas
             </p>
           </div>
         </div>
         <button
           onClick={handleViewStracker}
-          className="flex-shrink-0 px-3 py-1.5 rounded-lg text-[13px] font-semibold transition-all active:scale-95"
+          className="flex-shrink-0 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all active:scale-95"
           style={{
             background: 'rgba(28,28,35,.6)',
             border: '1px solid rgba(255,255,255,.1)',
@@ -121,7 +120,7 @@ export function GeminiJsonViewer() {
               background: 'rgba(10,132,255,.1)',
               border: '1px solid rgba(10,132,255,.25)',
               color: '#0a84ff',
-              fontSize: 13,
+              fontSize: 10,
               fontWeight: 700,
               letterSpacing: '0.08em',
             }}
@@ -150,16 +149,14 @@ export function GeminiJsonViewer() {
             onClick={handleCopy}
             className="w-full max-w-sm flex items-center justify-center gap-2 py-4 rounded-2xl font-bold transition-all active:scale-95"
             style={{
-              // V6.2 Apple Maps 4000 monochrome — single Apple-blue accent
-              // for the primary action; the "copied" state stays neutral white.
               background: copied
-                ? 'rgba(255,255,255,.12)'
-                : '#0a84ff',
+                ? 'linear-gradient(135deg, #30d158 0%, #34c759 100%)'
+                : 'linear-gradient(135deg, #0a84ff 0%, #007aff 100%)',
               color: '#fff',
               fontSize: 15,
               letterSpacing: '0.04em',
               boxShadow: copied
-                ? '0 8px 24px rgba(255,255,255,.12)'
+                ? '0 8px 24px rgba(48,209,88,.35)'
                 : '0 8px 24px rgba(10,132,255,.35)',
               border: 'none',
               cursor: 'pointer',
@@ -167,12 +164,12 @@ export function GeminiJsonViewer() {
           >
             {copied ? (
               <>
-                <Check size={18} strokeWidth={1.75} style={{ color: '#fff' }} />
+                <span style={{ fontSize: 18 }}>✓</span>
                 <span>¡COPIADO! Pega en Gemini</span>
               </>
             ) : (
               <>
-                <Clipboard size={18} strokeWidth={1.75} style={{ color: '#fff' }} />
+                <span style={{ fontSize: 18 }}>📋</span>
                 <span>COPIAR JSON PARA GEMINI</span>
               </>
             )}
@@ -181,7 +178,7 @@ export function GeminiJsonViewer() {
           {/* Botón secundario descargar */}
           <button
             onClick={handleDownload}
-            className="mt-3 flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-semibold transition-all active:scale-95"
+            className="mt-3 flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-[11px] font-semibold transition-all active:scale-95"
             style={{
               background: 'rgba(28,28,35,.6)',
               border: '1px solid rgba(255,255,255,.1)',
@@ -189,7 +186,7 @@ export function GeminiJsonViewer() {
               cursor: 'pointer',
             }}
           >
-            <Download size={14} strokeWidth={1.75} style={{ color: 'rgba(255,255,255,.65)' }} />
+            <span>⬇</span>
             <span>Descargar .json</span>
           </button>
 
@@ -198,10 +195,9 @@ export function GeminiJsonViewer() {
             className="grid grid-cols-3 gap-2 mt-6 w-full max-w-sm"
           >
             {[
-              // V6.2 Apple Maps 4000 monochrome — neutral white opacities.
-              { num: '10', label: 'Problemas', color: 'rgba(255,255,255,.85)' },
-              { num: '8', label: 'Soluciones', color: 'rgba(255,255,255,.7)' },
-              { num: '10', label: 'Mejoras atómicas', color: 'rgba(255,255,255,.85)' },
+              { num: '10', label: 'Problemas', color: '#ff453a' },
+              { num: '8', label: 'Soluciones', color: '#ff9f0a' },
+              { num: '10', label: 'Mejoras atómicas', color: '#30d158' },
             ].map((s) => (
               <div
                 key={s.label}
@@ -212,7 +208,7 @@ export function GeminiJsonViewer() {
                 }}
               >
                 <div className="font-bold" style={{ fontSize: 20, color: s.color }}>{s.num}</div>
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,.5)', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                <div style={{ fontSize: 9, color: 'rgba(255,255,255,.5)', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
                   {s.label}
                 </div>
               </div>
@@ -226,15 +222,14 @@ export function GeminiJsonViewer() {
             <h3 className="font-bold text-xs uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.55)' }}>
               Preview del JSON
             </h3>
-            <span style={{ fontSize: 13, color: 'rgba(255,255,255,.35)' }}>(recortado)</span>
+            <span style={{ fontSize: 10, color: 'rgba(255,255,255,.35)' }}>(recortado)</span>
           </div>
           <pre
-            className="rounded-xl p-3 overflow-x-auto text-[13px] leading-relaxed"
+            className="rounded-xl p-3 overflow-x-auto text-[10px] leading-relaxed"
             style={{
               background: 'rgba(0,0,0,.4)',
               border: '1px solid rgba(255,255,255,.06)',
-              // V6.2 monochrome — preview text in high-opacity white.
-              color: 'rgba(255,255,255,.85)',
+              color: '#30d158',
               fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
               maxHeight: '320px',
               scrollbarWidth: 'thin',
@@ -293,19 +288,18 @@ export function GeminiJsonViewer() {
           <div
             className="rounded-xl p-4"
             style={{
-              // V6.2 monochrome — neutral white-opacity container.
-              background: 'rgba(255,255,255,.05)',
-              border: '1px solid rgba(255,255,255,.15)',
+              background: 'rgba(48,209,88,.05)',
+              border: '1px solid rgba(48,209,88,.15)',
             }}
           >
-            <h3 className="font-bold text-xs mb-2" style={{ color: 'rgba(255,255,255,.85)', letterSpacing: '0.04em' }}>
+            <h3 className="font-bold text-xs mb-2" style={{ color: '#30d158', letterSpacing: '0.04em' }}>
               ▸ CÓMO USAR
             </h3>
             <ol className="space-y-1.5" style={{ fontSize: 12, color: 'rgba(255,255,255,.7)', lineHeight: 1.5 }}>
-              <li><strong style={{ color: 'rgba(255,255,255,.85)' }}>1.</strong> Clic en <strong>COPIAR JSON PARA GEMINI</strong> (arriba)</li>
-              <li><strong style={{ color: 'rgba(255,255,255,.85)' }}>2.</strong> Abrir Gemini (gemini.google.com)</li>
-              <li><strong style={{ color: 'rgba(255,255,255,.85)' }}>3.</strong> Pegar + prompt: <em style={{ color: 'rgba(255,255,255,.9)' }}>"Analizá este JSON de mi app STRACKER. Devolveme tu roast estructurado con hallazgos (T1), correcciones atómicas (T2), rediseños UI (T3), decisiones (T4), magias (T5) y matriz verificación (T6). Sé técnico y específico."</em></li>
-              <li><strong style={{ color: 'rgba(255,255,255,.85)' }}>4.</strong> Volver acá con la respuesta de Gemini y la discutimos</li>
+              <li><strong style={{ color: '#30d158' }}>1.</strong> Clic en <strong>COPIAR JSON PARA GEMINI</strong> (arriba)</li>
+              <li><strong style={{ color: '#30d158' }}>2.</strong> Abrir Gemini (gemini.google.com)</li>
+              <li><strong style={{ color: '#30d158' }}>3.</strong> Pegar + prompt: <em style={{ color: 'rgba(255,255,255,.9)' }}>"Analizá este JSON de mi app STRACKER. Devolveme tu roast estructurado con hallazgos (T1), correcciones atómicas (T2), rediseños UI (T3), decisiones (T4), magias (T5) y matriz verificación (T6). Sé técnico y específico."</em></li>
+              <li><strong style={{ color: '#30d158' }}>4.</strong> Volver acá con la respuesta de Gemini y la discutimos</li>
             </ol>
           </div>
         </section>
@@ -318,7 +312,7 @@ export function GeminiJsonViewer() {
           background: 'rgba(11,15,20,.85)',
           backdropFilter: 'blur(24px)',
           borderColor: 'rgba(255,255,255,.06)',
-          fontSize: 13,
+          fontSize: 10,
           color: 'rgba(255,255,255,.4)',
         }}
       >

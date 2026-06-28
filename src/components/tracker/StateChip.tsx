@@ -96,7 +96,7 @@ export function StateChip({
         >
           {movementLabel}
         </span>
-        <span style={{ color: 'rgba(255,255,255,.2)', fontSize: 13 }}>|</span>
+        <span style={{ color: 'rgba(255,255,255,.2)', fontSize: 10 }}>|</span>
         <span
           className="truncate"
           style={{

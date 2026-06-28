@@ -233,7 +233,7 @@ function TabButton({
         background: active ? 'rgba(255,255,255,.08)' : 'transparent',
         border: '1px solid rgba(255,255,255,.04)',
         color: active ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.5)',
-        fontSize: 'clamp(13px, 1.2vw, 17px)',
+        fontSize: 'clamp(9px, 1.2vw, 11px)',
         fontWeight: 500,
         letterSpacing: '0.06em',
         textTransform: 'uppercase' as const,
@@ -283,7 +283,7 @@ function Metric({
       <div className="flex items-center justify-between gap-1 min-w-0">
         <span
           className="font-light uppercase tracking-wider truncate"
-          style={{ color: 'rgba(255,255,255,.5)', fontSize: 'clamp(13px, 1.1vw, 16px)', letterSpacing: '0.06em' }}
+          style={{ color: 'rgba(255,255,255,.5)', fontSize: 'clamp(9px, 1.1vw, 10px)', letterSpacing: '0.06em' }}
         >
           {label}
         </span>
@@ -312,7 +312,7 @@ function Metric({
         {unit && (
           <span
             className="font-light flex-shrink-0"
-            style={{ color: 'rgba(255,255,255,.4)', fontSize: 13 }}
+            style={{ color: 'rgba(255,255,255,.4)', fontSize: 10 }}
           >
             {unit}
           </span>
@@ -321,7 +321,7 @@ function Metric({
       {sub && (
         <span
           className="font-light truncate"
-          style={{ color: 'rgba(255,255,255,.4)', fontSize: 12 }}
+          style={{ color: 'rgba(255,255,255,.4)', fontSize: 9 }}
         >
           {sub}
         </span>
@@ -368,10 +368,10 @@ function PatternsView({
           >
             <Activity size={10} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.95)' }} />
           </div>
-          <span className="font-semibold uppercase tracking-wider truncate" style={{ color: 'rgba(255,255,255,.95)', fontSize: 13, letterSpacing: '0.06em' }}>
+          <span className="font-semibold uppercase tracking-wider truncate" style={{ color: 'rgba(255,255,255,.95)', fontSize: 10, letterSpacing: '0.06em' }}>
             Anomalía
           </span>
-          <span className="font-light truncate" style={{ color: 'rgba(255,255,255,.6)', fontSize: 13 }}>
+          <span className="font-light truncate" style={{ color: 'rgba(255,255,255,.6)', fontSize: 10 }}>
             {anomaly.reason}
           </span>
         </div>
@@ -389,7 +389,7 @@ function PatternsView({
           >
             <Activity size={10} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.35)' }} />
           </div>
-          <span className="font-light" style={{ color: 'rgba(255,255,255,.45)', fontSize: 13 }}>
+          <span className="font-light" style={{ color: 'rgba(255,255,255,.45)', fontSize: 10 }}>
             Sin datos suficientes (necesita visitas ≥60 min en 7d)
           </span>
         </div>
@@ -410,11 +410,11 @@ function PatternsView({
                 <span className="font-semibold truncate" style={{ color: 'rgba(255,255,255,.95)', fontSize: 12 }}>
                   {s.label}
                 </span>
-                <span className="font-light flex-shrink-0 tabular-nums" style={{ color: 'rgba(255,255,255,.45)', fontSize: 13 }}>
+                <span className="font-light flex-shrink-0 tabular-nums" style={{ color: 'rgba(255,255,255,.45)', fontSize: 10 }}>
                   {Math.round(s.totalDwellMin / 60)}h {s.totalDwellMin % 60}m
                 </span>
               </div>
-              <span className="font-light truncate" style={{ color: 'rgba(255,255,255,.45)', fontSize: 13 }}>
+              <span className="font-light truncate" style={{ color: 'rgba(255,255,255,.45)', fontSize: 10 }}>
                 {formatHourRange(s.habitualHours) || 'horario variable'}
               </span>
             </div>
@@ -431,7 +431,7 @@ function PatternsView({
           >
             <Navigation size={10} strokeWidth={1.5} style={{ color: 'rgba(10,132,255,.6)' }} />
           </div>
-          <span className="font-light truncate" style={{ color: 'rgba(10,132,255,.5)', fontSize: 12 }}>
+          <span className="font-light truncate" style={{ color: 'rgba(10,132,255,.5)', fontSize: 9 }}>
             {prediction.reason}
           </span>
         </div>
@@ -441,7 +441,7 @@ function PatternsView({
       {perm !== 'granted' && perm !== 'unsupported' && (
         <div className="flex items-center gap-1.5 px-2 pt-0.5">
           <Bell size={9} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.3)' }} />
-          <span className="font-light" style={{ color: 'rgba(255,255,255,.35)', fontSize: 12 }}>
+          <span className="font-light" style={{ color: 'rgba(255,255,255,.35)', fontSize: 9 }}>
             Tocá la campana para activar alertas reactivas
           </span>
         </div>
@@ -481,7 +481,7 @@ function PredictionBadge({ prediction }: { prediction: ReturnType<typeof predict
         </div>
         <span
           className="font-light uppercase tracking-wider"
-          style={{ color: 'rgba(10,132,255,.7)', fontSize: 12, letterSpacing: '0.08em' }}
+          style={{ color: 'rgba(10,132,255,.7)', fontSize: 9, letterSpacing: '0.08em' }}
         >
           Predicción
         </span>
@@ -493,7 +493,7 @@ function PredictionBadge({ prediction }: { prediction: ReturnType<typeof predict
         </span>
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className="font-light truncate" style={{ color: 'rgba(255,255,255,.5)', fontSize: 12 }}>
+        <span className="font-light truncate" style={{ color: 'rgba(255,255,255,.5)', fontSize: 9 }}>
           Probable destino
         </span>
         <span className="font-semibold truncate" style={{ color: 'rgba(255,255,255,.95)', fontSize: 13 }}>
@@ -524,10 +524,10 @@ function PredictionBadge({ prediction }: { prediction: ReturnType<typeof predict
         <div className="flex items-center gap-2 mt-0.5">
           {prediction.predictions.slice(1).map((p, i) => (
             <div key={`pred-${i}`} className="flex items-center gap-1">
-              <span className="font-light truncate" style={{ color: 'rgba(255,255,255,.4)', fontSize: 12 }}>
+              <span className="font-light truncate" style={{ color: 'rgba(255,255,255,.4)', fontSize: 9 }}>
                 {p.label}
               </span>
-              <span className="font-light tabular-nums" style={{ color: 'rgba(10,132,255,.5)', fontSize: 12 }}>
+              <span className="font-light tabular-nums" style={{ color: 'rgba(10,132,255,.5)', fontSize: 9 }}>
                 {formatProbability(p.probability)}
               </span>
             </div>

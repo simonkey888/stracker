@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-export const dynamic = 'force-dynamic'
+// Required for output: export — prevents Next.js from trying to prerender this API route.
+export const dynamic = 'force-static'
 
 // ══════════════════════════════════════════════════════════════════
 // OSRM ROUTING PROXY — Road-aligned ghost trail routing

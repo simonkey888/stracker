@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 
-export const dynamic = 'force-dynamic'
+export const dynamic = 'force-static'
 
 const PYTHON_BACKEND_PORT = 3003
 const PRODUCTION_BACKEND = 'https://strackerglm.onrender.com'

@@ -189,9 +189,8 @@ export function CookieDrawer({ open, onClose, showToast, onSaved }: CookieDrawer
             className="fixed inset-0 z-50"
             style={{
               background: 'rgba(0,0,0,.55)',
-              // V6.2 Apple Maps 4000 — backdrop-blur-xl (24px) per spec.
-              backdropFilter: 'blur(24px)',
-              WebkitBackdropFilter: 'blur(24px)',
+              backdropFilter: 'blur(8px)',
+              WebkitBackdropFilter: 'blur(8px)',
             }}
             aria-hidden="true"
           />
@@ -264,7 +263,7 @@ export function CookieDrawer({ open, onClose, showToast, onSaved }: CookieDrawer
                       <div
                         style={{
                           color: 'rgba(255,255,255,.5)',
-                          fontSize: 'clamp(14px, 2vw, 17px)',
+                          fontSize: 'clamp(10px, 2vw, 11px)',
                           fontWeight: 500,
                         }}
                       >
@@ -305,7 +304,7 @@ export function CookieDrawer({ open, onClose, showToast, onSaved }: CookieDrawer
                     <span
                       style={{
                         color: 'rgba(255,255,255,.7)',
-                        fontSize: 'clamp(14px, 2.2vw, 17px)',
+                        fontSize: 'clamp(10px, 2.2vw, 11px)',
                         lineHeight: 1.4,
                       }}
                     >
@@ -356,7 +355,7 @@ export function CookieDrawer({ open, onClose, showToast, onSaved }: CookieDrawer
                             <span
                               style={{
                                 color: 'rgba(10,132,255,.9)',
-                                fontSize: 'clamp(13px, 2vw, 16px)',
+                                fontSize: 'clamp(9px, 2vw, 10px)',
                                 fontWeight: 600,
                                 letterSpacing: '0.02em',
                               }}
@@ -370,7 +369,7 @@ export function CookieDrawer({ open, onClose, showToast, onSaved }: CookieDrawer
                             <span
                               style={{
                                 color: 'rgba(255,255,255,.4)',
-                                fontSize: 'clamp(13px, 2vw, 16px)',
+                                fontSize: 'clamp(9px, 2vw, 10px)',
                               }}
                             >
                               Esperando cookies válidas…
@@ -383,7 +382,7 @@ export function CookieDrawer({ open, onClose, showToast, onSaved }: CookieDrawer
                       <span
                         style={{
                           color: 'rgba(255,255,255,.3)',
-                          fontSize: 12,
+                          fontSize: 9,
                           fontFamily: 'ui-monospace, monospace',
                         }}
                       >
@@ -436,30 +435,26 @@ export function CookieDrawer({ open, onClose, showToast, onSaved }: CookieDrawer
                     <div
                       className="flex items-start gap-2 px-3 py-2.5 rounded-xl"
                       style={{
-                        // V6.2 Apple Maps 4000 monochrome — neutral white-opacity
-                        // containers for all result states. Severity is conveyed
-                        // by the lucide icon (CircleCheck / TriangleAlert) and
-                        // border opacity, not by hue.
                         background: result.status === 'ok'
-                          ? (result.has_critical ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.05)')
-                          : 'rgba(255,255,255,.06)',
+                          ? (result.has_critical ? 'rgba(52,199,89,.08)' : 'rgba(255,159,10,.08)')
+                          : 'rgba(255,59,48,.08)',
                         border: result.status === 'ok'
-                          ? (result.has_critical ? '1px solid rgba(255,255,255,.2)' : '1px solid rgba(255,255,255,.12)')
-                          : '1px solid rgba(255,255,255,.15)',
+                          ? (result.has_critical ? '1px solid rgba(52,199,89,.2)' : '1px solid rgba(255,159,10,.2)')
+                          : '1px solid rgba(255,59,48,.2)',
                       }}
                     >
                       {result.status === 'ok' ? (
                         result.has_critical
-                          ? <CircleCheck size={14} strokeWidth={1.75} style={{ color: 'rgba(255,255,255,.85)', flexShrink: 0, marginTop: 1 }} />
-                          : <TriangleAlert size={14} strokeWidth={1.75} style={{ color: 'rgba(255,255,255,.7)', flexShrink: 0, marginTop: 1 }} />
+                          ? <CircleCheck size={14} strokeWidth={1.75} style={{ color: '#34c759', flexShrink: 0, marginTop: 1 }} />
+                          : <TriangleAlert size={14} strokeWidth={1.75} style={{ color: '#ff9f0a', flexShrink: 0, marginTop: 1 }} />
                       ) : (
-                        <TriangleAlert size={14} strokeWidth={1.75} style={{ color: 'rgba(255,255,255,.85)', flexShrink: 0, marginTop: 1 }} />
+                        <TriangleAlert size={14} strokeWidth={1.75} style={{ color: '#ff3b30', flexShrink: 0, marginTop: 1 }} />
                       )}
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div
                           style={{
                             color: 'rgba(255,255,255,.9)',
-                            fontSize: 'clamp(14px, 2.2vw, 18px)',
+                            fontSize: 'clamp(10px, 2.2vw, 12px)',
                             fontWeight: 600,
                           }}
                         >
@@ -471,7 +466,7 @@ export function CookieDrawer({ open, onClose, showToast, onSaved }: CookieDrawer
                           <div
                             style={{
                               color: 'rgba(255,255,255,.5)',
-                              fontSize: 'clamp(13px, 2vw, 16px)',
+                              fontSize: 'clamp(9px, 2vw, 10px)',
                               marginTop: 2,
                             }}
                           >
@@ -498,7 +493,7 @@ export function CookieDrawer({ open, onClose, showToast, onSaved }: CookieDrawer
                       className="space-y-1"
                       style={{
                         color: 'rgba(255,255,255,.5)',
-                        fontSize: 'clamp(13px, 2vw, 17px)',
+                        fontSize: 'clamp(9px, 2vw, 11px)',
                         lineHeight: 1.5,
                         paddingLeft: 4,
                         listStyle: 'decimal',

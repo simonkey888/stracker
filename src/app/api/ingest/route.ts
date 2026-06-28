@@ -9,6 +9,9 @@ import {
   type SignalPipelineResult,
 } from '@/lib/signal-pipeline'
 
+// Required for output: export — prevents Next.js from trying to prerender this API route.
+export const dynamic = 'force-static'
+
 // ── CORS HEADERS — Chrome Extension needs these ──
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',

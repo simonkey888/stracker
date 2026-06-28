@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { computeStaleness, computeReliabilityTier } from '@/lib/observer-types'
 
+// Required for output: export — prevents Next.js from trying to prerender this API route.
+export const dynamic = 'force-static'
+
 export async function GET() {
   const entities = await db.entity.findMany({
     include: {
