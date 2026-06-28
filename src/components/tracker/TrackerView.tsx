@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import dynamic from 'next/dynamic'
 import {
-  Footprints, Car, Bus, Moon, PersonStanding, Bike,
+  Footprints, Car, Bus, Moon, PersonStanding,
   Wifi, WifiOff, Smartphone,
   Signal, SignalHigh, SignalMedium, SignalLow,
   Battery, BatteryFull, BatteryMedium, BatteryLow, BatteryWarning,
@@ -13,7 +13,6 @@ import {
   Clipboard, ClipboardCheck, Check, Microscope, Download,
   ChevronRight, Plane, Navigation,
   TriangleAlert, Info, Activity, Radio,
-  Route, History, Monitor, Gauge,
 } from 'lucide-react'
 import { CookiesBlock } from './CookiesBlock'
 import { CookieDrawer } from './CookieDrawer'
@@ -22,7 +21,7 @@ import { CookieDrawer } from './CookieDrawer'
 // friendly MapPlaceholder instead of a black "pantalla de la muerte".
 import { MapErrorBoundary } from './MapErrorBoundary'
 import { DynamicIsland, type IslandAlert } from './DynamicIsland'
-// V6.5: SpeedGauge import REMOVED — velocímetro eliminado por completo del código.
+import { SpeedGauge } from './SpeedGauge'
 import { MapStyleInyector, computePhase } from './MapStyleInyector'
 import { TrackerSheet } from './TrackerSheet'
 import { FloatingControls } from './FloatingControls'
@@ -55,7 +54,6 @@ const MOVEMENT_ICON: Record<string, LucideCmp> = {
   bus: Bus,
   sleep: Moon,
   still: PersonStanding,
-  moto: Bike, // V6.4: 'moto' token for 5-25 km/h mode
 }
 const NETWORK_ICON: Record<string, LucideCmp> = {
   wifi: Wifi,
@@ -109,8 +107,6 @@ const TileLayer = dynamic(() => import('react-leaflet').then(m => m.TileLayer), 
 const Polyline = dynamic(() => import('react-leaflet').then(m => m.Polyline), { ssr: false })
 const Marker = dynamic(() => import('react-leaflet').then(m => m.Marker), { ssr: false })
 const Circle = dynamic(() => import('react-leaflet').then(m => m.Circle), { ssr: false })
-// V6.8 GHOST_TRAIL_THRESHOLD — CircleMarker for stationary-trace rendering.
-const CircleMarker = dynamic(() => import('react-leaflet').then(m => m.CircleMarker), { ssr: false })
 
 // ══════════════════════════════════════════════════════════════════
 // TYPES — STRACKER Apple Maps Dark Minimalist
@@ -157,11 +153,6 @@ interface SnapshotData {
     [k: string]: any
   } | null
   ghostrail_pts: { lat: number; lng: number; t?: string; zone?: string }[]
-  // V6.10 STALE_DATA_EXPOSURE — raw timestamp of the last point received from
-  // Google's Location Sharing payload. Used to compute data age and switch the
-  // UI from "Tiempo Real" to "Señal Latente / Caché" when >10 min stale.
-  last_update?: string | null
-  device_label?: string
   _meta: {
     tick: number
     event_seq: number
@@ -294,15 +285,13 @@ function LiveMarker({ lat, lng, speedLabel, accuracy, solarDate, heading, headin
   const solarShadow = `${sun.offsetX.toFixed(1)}px ${sun.offsetY.toFixed(1)}px ${sun.blur}px rgba(${sun.color},${sun.opacity.toFixed(2)})`
 
   // V5.7 NAV_02_HEADING_SYSTEM: directional indicator (heading arrow).
-  // V6.4: arrow color updated to neon green (#00FF00) to match the new pin
-  // color, so the heading indicator reads as part of the pin identity.
-  // Rendered as a small wedge that rotates around the pin.
+  // Rendered as a small Apple-blue wedge that rotates around the pin.
   // When heading is null (no data) or latched (stationary), the arrow holds
   // its last position to avoid jitter. When null at init, no arrow is shown.
   const hasHeading = heading != null && isFinite(heading)
   const headingArrow = hasHeading
     ? `<div style="position:absolute;top:50%;left:50%;width:0;height:0;transform:translate(-50%,-50%) rotate(${heading}deg);pointer-events:none">
-          <div style="position:absolute;top:-22px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-bottom:8px solid #FF0000;opacity:${headingLatch ? 0.5 : 0.95};filter:drop-shadow(0 0 4px rgba(255,0,0,.75));transition:transform 400ms ease-out,opacity 300ms ease"></div>
+          <div style="position:absolute;top:-22px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-bottom:8px solid #0a84ff;opacity:${headingLatch ? 0.5 : 0.9};filter:drop-shadow(0 0 3px rgba(10,132,255,.6));transition:transform 400ms ease-out,opacity 300ms ease"></div>
        </div>`
     : ''
 
@@ -313,15 +302,15 @@ function LiveMarker({ lat, lng, speedLabel, accuracy, solarDate, heading, headin
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const L = require('leaflet')
         const speedHtml = speedLabel
-          ? `<div style="font-size:10px;font-weight:700;color:#FF0000;background:rgba(0,0,0,.85);padding:1px 6px;border-radius:6px;margin-top:3px;white-space:nowrap;backdrop-filter:blur(8px);border:1px solid rgba(255,0,0,.35);letter-spacing:.04em">${speedLabel}</div>`
+          ? `<div style="font-size:10px;font-weight:600;color:#f5f5f7;background:rgba(0,0,0,.65);padding:1px 6px;border-radius:6px;margin-top:3px;white-space:nowrap;backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.08)">${speedLabel}</div>`
           : ''
         return L.divIcon({
           // FIX_2: explicit className so globals.css can enforce visibility
           className: 'live-marker-pin',
           html: `<div style="position:relative;display:flex;flex-direction:column;align-items:center;pointer-events:none;width:100%;height:100%;justify-content:center">
             ${headingArrow}
-            <div style="width:22px;height:22px;border-radius:50%;background:#FF0000;border:3px solid #FFFFFF;box-shadow:0 0 14px rgba(255,0,0,.85),0 0 28px rgba(255,0,0,.45),0 2px 8px rgba(0,0,0,.6),${solarShadow};position:relative;animation:neonPinPulse 1.4s ease-in-out infinite">
-              <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:7px;height:7px;border-radius:50%;background:#f5f5f7;box-shadow:0 0 6px rgba(255,255,255,.95)"></div>
+            <div style="width:20px;height:20px;border-radius:50%;background:#0a84ff;border:3px solid #f5f5f7;box-shadow:0 0 14px rgba(10,132,255,.65),0 2px 8px rgba(0,0,0,.4),${solarShadow};position:relative">
+              <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:6px;height:6px;border-radius:50%;background:#f5f5f7;box-shadow:0 0 4px rgba(255,255,255,.8)"></div>
               <div style="position:absolute;inset:-${8 * haloScale}px;border-radius:50%;border:2px solid rgba(${haloColor},${haloOpacity});animation:applePulse 2.5s ease-out infinite"></div>
               <div style="position:absolute;inset:-${16 * haloScale}px;border-radius:50%;border:1.5px solid rgba(${haloColor},${haloOpacity * 0.4});animation:applePulse 2.5s ease-out infinite .5s"></div>
             </div>
@@ -333,55 +322,6 @@ function LiveMarker({ lat, lng, speedLabel, accuracy, solarDate, heading, headin
         })
       })() : undefined}
       zIndexOffset={10000}
-    />
-  )
-}
-
-// ══════════════════════════════════════════════════════════════════
-// RA28 — StaleMarker (UI resilience & control restoration)
-// ══════════════════════════════════════════════════════════════════
-// When the backend reports no_location (RA27 integrity: LiveMarker hidden),
-// the operator is left staring at a "dead" map with no contextual anchor.
-// StaleMarker renders the LAST KNOWN cached position (from localStorage) as a
-// desaturated, dimmed, non-pulsing pin so the operator can SEE where the
-// target was last seen — without confusing it with a live reading.
-//
-// Visual contract vs LiveMarker:
-//   - 50% opacity, grayscale (no Apple-blue accent)
-//   - No pulse halo, no heading arrow, no solar shadow (it's a memory, not live)
-//   - z-index BELOW LiveMarker (zIndexOffset 500 vs 10000) so a returning
-//     live signal immediately occludes the stale ghost
-//   - Label: "Última señal hace X min" so the age is unambiguous
-//
-// Integrity guarantee: this marker is ONLY rendered when mapData.lat is null
-// (no live signal). The instant real coords arrive, mapData.lat becomes
-// non-null → LiveMarker renders → StaleMarker render-gate (in TrackerView
-// body) turns off. There is no scenario where both pins overlap.
-function StaleMarker({ lat, lng, ageLabel }: { lat: number; lng: number; ageLabel: string }) {
-  // Defensive: never render with invalid coords
-  if (lat == null || lng == null || !isFinite(lat) || !isFinite(lng)) return null
-  return (
-    <Marker
-      position={[lat, lng]}
-      icon={typeof window !== 'undefined' ? (() => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const L = require('leaflet')
-        const labelHtml = ageLabel
-          ? `<div style="font-size:11px;font-weight:500;color:rgba(245,245,247,.7);background:rgba(10,10,10,.7);padding:2px 8px;border-radius:8px;margin-top:4px;white-space:nowrap;backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.08);letter-spacing:.02em">Última señal ${ageLabel}</div>`
-          : '<div style="font-size:11px;font-weight:500;color:rgba(245,245,247,.7);background:rgba(10,10,10,.7);padding:2px 8px;border-radius:8px;margin-top:4px;white-space:nowrap;backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.08)">Última ubicación conocida</div>'
-        return L.divIcon({
-          className: 'stale-marker-pin',
-          html: `<div style="position:relative;display:flex;flex-direction:column;align-items:center;pointer-events:none;width:100%;height:100%;justify-content:center;opacity:.5">
-            <div style="width:18px;height:18px;border-radius:50%;background:#3a3a3c;border:2px solid rgba(245,245,247,.6);box-shadow:0 2px 6px rgba(0,0,0,.4);position:relative">
-              <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:5px;height:5px;border-radius:50%;background:rgba(245,245,247,.7)"></div>
-            </div>
-            ${labelHtml}
-          </div>`,
-          iconSize: [56, 56],
-          iconAnchor: [28, 28],
-        })
-      })() : undefined}
-      zIndexOffset={500}
     />
   )
 }
@@ -420,8 +360,7 @@ function DriftDebugMarker({
 
   return (
     <>
-      {/* V6.2 Apple Maps 4000 monochrome — RAW backend coordinate crosshair
-          (was red #ff3b30, now neutral white at 0.7 opacity) */}
+      {/* Red crosshair at the RAW backend coordinate */}
       <Marker
         position={[rawLat, rawLng]}
         interactive={false}
@@ -431,10 +370,10 @@ function DriftDebugMarker({
           return L.divIcon({
             className: 'drift-debug-raw',
             html: `<div style="position:relative;width:36px;height:36px;pointer-events:none">
-              <div style="position:absolute;top:50%;left:0;width:100%;height:2px;background:rgba(255,255,255,0.7);transform:translateY(-50%);box-shadow:0 0 4px rgba(255,255,255,0.4)"></div>
-              <div style="position:absolute;left:50%;top:0;height:100%;width:2px;background:rgba(255,255,255,0.7);transform:translateX(-50%);box-shadow:0 0 4px rgba(255,255,255,0.4)"></div>
-              <div style="position:absolute;top:50%;left:50%;width:8px;height:8px;border:2px solid rgba(255,255,255,0.7);border-radius:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.15)"></div>
-              <div style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:9px;font-weight:700;color:rgba(255,255,255,0.7);background:rgba(0,0,0,.75);padding:1px 5px;border-radius:4px;white-space:nowrap;border:1px solid rgba(255,255,255,0.3)">RAW ${driftM.toFixed(1)}m${snapReason ? ' · ' + snapReason : ''}</div>
+              <div style="position:absolute;top:50%;left:0;width:100%;height:2px;background:#ff3b30;transform:translateY(-50%);box-shadow:0 0 4px rgba(255,59,48,.6)"></div>
+              <div style="position:absolute;left:50%;top:0;height:100%;width:2px;background:#ff3b30;transform:translateX(-50%);box-shadow:0 0 4px rgba(255,59,48,.6)"></div>
+              <div style="position:absolute;top:50%;left:50%;width:8px;height:8px;border:2px solid #ff3b30;border-radius:50%;transform:translate(-50%,-50%);background:rgba(255,59,48,.15)"></div>
+              <div style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:9px;font-weight:700;color:#ff3b30;background:rgba(0,0,0,.75);padding:1px 5px;border-radius:4px;white-space:nowrap;border:1px solid rgba(255,59,48,.3)">RAW ${driftM.toFixed(1)}m${snapReason ? ' · ' + snapReason : ''}</div>
             </div>`,
             iconSize: [36, 36],
             iconAnchor: [18, 18],
@@ -462,11 +401,11 @@ function DriftDebugMarker({
         })() : undefined}
         zIndexOffset={9989}
       />
-      {/* V6.2 monochrome connecting line from raw → rendered */}
+      {/* Red connecting line from raw → rendered */}
       <Polyline
         positions={[[rawLat, rawLng], [renderedLat, renderedLng]]}
         pathOptions={{
-          color: 'rgba(255,255,255,0.7)',
+          color: '#ff3b30',
           weight: 1.5,
           opacity: 0.6,
           dashArray: '4,4',
@@ -477,90 +416,72 @@ function DriftDebugMarker({
 }
 
 // ══════════════════════════════════════════════════════════════════
-// GHOST TRAIL — V6.7: Single high-visibility blue polyline (24h history)
-// V6.8 GHOST_TRAIL_THRESHOLD: render even with a single stationary point.
-// ══════════════════════════════════════════════════════════════════
-// V6.7 GHOST_TRAIL_VISIBILITY: simplified to a single polyline per directive
-//   "Renderizado de la polilínea con weight: 5, color: '#3b82f6', y opacity:
-//    0.8 para máxima visibilidad". The previous segmented age-gradient +
-//   comet-head glow (V6.5 white streak) is replaced with one uniform blue
-//   line — maximum visibility across both dark (CartoDB) and satellite
-//   (ArcGIS) basemaps. The red pulsing LiveMarker already marks the current
-//   position, so the trail no longer needs a comet-head to disambiguate.
-// Z-INDEX: rendered on Leaflet's overlayPane (z=400) — above the tile pane
-//   (z=200, the map imagery) and below the marker pane (z=600, the pin) so
-//   the trail NEVER covers the pin. Pointer-events disabled in globals.css
-//   so the polyline never blocks map interaction.
-// DATA SOURCE: routedPoints comes from ghostrailPts (24h CSV history fetched
-//   via /points?start=...&end=... on mount + poll). The 24h cutoff is enforced
-//   upstream in the ghostrailPts useMemo.
-//
-// V6.8 GHOST_TRAIL_THRESHOLD — static-device visibility. The previous
-//   `length < 2` gate caused the trail to DISAPPEAR entirely when the device
-//   was geographically static for the full 24h window (all points collapsed
-//   to 1). The directive requires: "Asegurar la visibilidad del trazado
-//   histórico incluso si el delta de distancia es mínimo." Fix: when there's
-//   exactly 1 routed point (or many duplicates at the same coordinate),
-//   render a CircleMarker at that location instead of bailing. The blue
-//   circle (radius 6, weight 5, same #3b82f6 color) acts as a "stationary
-//   trace" indicator — the operator sees that data EXISTS, the target just
-//   hasn't moved. Polyline path is still used for ≥2 distinct points.
+// GHOST TRAIL — B3+B5: SINGLE route with age-based opacity fading
+// Apple Maps style: recent = strong, old = faded. NO duplicate layers.
+// AT_3 (stracker_v8_hyper_premium): Linear trajectory fading — the leading
+// segment (newest 5 points) gets a comet-tail glow + a brighter head, so
+// the trail reads like a long-exposure light streak rather than a drawn line.
+// Also bumped segment cap to 16 for a smoother age gradient.
 // ══════════════════════════════════════════════════════════════════
 function GhostTrail({ routedPoints }: { routedPoints: [number, number][] }) {
-  // V6.8: empty trail → render nothing (no data at all).
-  if (!routedPoints || routedPoints.length === 0) return null
+  if (!routedPoints || routedPoints.length < 2) return null
 
-  // V6.8: single point OR all duplicates → render a stationary CircleMarker
-  // so the trace is still visible. The CircleMarker uses the same #3b82f6
-  // blue as the polyline, with weight:5 to match the trail's visual weight.
-  if (routedPoints.length === 1) {
-    return (
-      <CircleMarker
-        center={routedPoints[0]}
-        pathOptions={{
-          color: '#3b82f6',
-          weight: 5,
-          fillColor: '#3b82f6',
-          fillOpacity: 0.8,
-        }}
-        radius={6}
-      />
-    )
+  const total = routedPoints.length
+  // AT_3: bumped cap 8 → 16 for smoother gradient tail
+  const NUM_SEGMENTS = Math.min(16, Math.max(2, Math.ceil(total / 12)))
+  const segmentSize = Math.ceil(total / NUM_SEGMENTS)
+
+  const segments: { pts: [number, number][]; opacity: number; weight: number; isHead: boolean }[] = []
+  for (let i = 0; i < NUM_SEGMENTS; i++) {
+    const start = i * segmentSize
+    const end = Math.min(start + segmentSize + 1, total) // +1 for overlap continuity
+    const pts = routedPoints.slice(start, end)
+    if (pts.length < 2) continue
+
+    // Age-based opacity: oldest = 0.10, newest = 1.0 (AT_3: deeper fade tail)
+    const ageFraction = i / (NUM_SEGMENTS - 1) // 0 = oldest, 1 = newest
+    const opacity = 0.10 + ageFraction * 0.90 // range [0.10, 1.0]
+    const weight = 1.8 + ageFraction * 2.6 // range [1.8, 4.4]
+    // AT_3: the final segment is the "comet head" — gets the glow class
+    const isHead = i === NUM_SEGMENTS - 1
+
+    segments.push({ pts, opacity, weight, isHead })
   }
 
-  // V6.8: check if ALL points are at the same coordinate (device static for
-  // the whole window). If so, render the CircleMarker — a zero-length
-  // polyline renders nothing in Leaflet, so the CircleMarker is required.
-  const allSame = routedPoints.every(p =>
-    p[0] === routedPoints[0][0] && p[1] === routedPoints[0][1]
-  )
-  if (allSame) {
-    return (
-      <CircleMarker
-        center={routedPoints[0]}
-        pathOptions={{
-          color: '#3b82f6',
-          weight: 5,
-          fillColor: '#3b82f6',
-          fillOpacity: 0.8,
-        }}
-        radius={6}
-      />
-    )
-  }
-
-  // V6.7: ≥2 distinct points → render the uniform blue polyline.
   return (
-    <Polyline
-      positions={routedPoints}
-      pathOptions={{
-        color: '#3b82f6',
-        weight: 5,
-        opacity: 0.8,
-        lineCap: 'round',
-        lineJoin: 'round',
-      }}
-    />
+    <>
+      {/* V5.7 NAV_01_PATH_ENGINE: base logical path polyline.
+          Per spec: stroke color #0a84ff, strokeOpacity 0.6, strokeWeight 4.
+          Rendered BENEATH the comet-tail segments so the age gradient still
+          reads on top, but the underlying "logical route" is always visible
+          as a continuous line connecting all timestamped points. */}
+      <Polyline
+        key="nav-path-base"
+        positions={routedPoints}
+        pathOptions={{
+          color: '#0a84ff',
+          opacity: 0.6,
+          weight: 4,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }}
+      />
+      {segments.map((seg, i) => (
+        <Polyline
+          key={`ghost-seg-${i}`}
+          positions={seg.pts}
+          // AT_3: comet-tail glow on the leading segment via className
+          className={seg.isHead ? 'ghost-comet-head' : undefined}
+          pathOptions={{
+            color: '#0a84ff',
+            weight: seg.weight,
+            opacity: seg.opacity,
+            lineCap: 'round',
+            lineJoin: 'round',
+          }}
+        />
+      ))}
+    </>
   )
 }
 
@@ -606,441 +527,9 @@ function MetricBadge({
       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full flex-shrink-0 ${GLASS_PILL}`}
     >
       {icon}
-      <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color, fontSize: 'clamp(13px, 2vw, 17px)' }}>{value}</span>
+      <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color, fontSize: 'clamp(9px, 2vw, 11px)' }}>{value}</span>
     </div>
   )
-}
-
-// ══════════════════════════════════════════════════════════════════
-// V6.4 UI_METRICS_DASHBOARD — MasterControlPanel building blocks
-// ══════════════════════════════════════════════════════════════════
-// The "Simón Sequence" panel: a 2x3 grid of high-contrast metric cells
-// replacing the legacy single-line MetricsRow. Each cell dedicates its
-// own tile to a single telemetry dimension so the operator gets an
-// at-a-glance tactical read instead of a cramped horizontal pill row.
-//
-// MetricCell: a single tile. ICON + LABEL header (small, muted), VALUE
-// (large, bright) + optional SUB (kinetic supplementary read, e.g. km).
-// Glass background, subtle border, rounded-2xl — matches the Apple Maps
-// 4000 design system without breaking the monochrome aesthetic.
-function MetricCell({
-  icon: Icon, label, value, sub, valueColor,
-}: {
-  icon: LucideCmp
-  label: string
-  value: string
-  sub?: string
-  valueColor?: string
-}) {
-  return (
-    <div
-      className="flex flex-col gap-1.5 p-2.5 rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
-      style={{
-        background: 'rgba(255,255,255,0.04)',
-        border: '1px solid rgba(255,255,255,0.05)',
-        minHeight: 64,
-      }}
-    >
-      <div className="flex items-center gap-1.5">
-        <Icon size={13} strokeWidth={1.8} style={{ color: 'rgba(255,255,255,.85)', flexShrink: 0 }} />
-        <span
-          className="font-bold uppercase tracking-wider truncate"
-          style={{ color: 'rgba(255,255,255,.45)', fontSize: 'clamp(9px, 1.2vw, 11px)', letterSpacing: '0.1em' }}
-        >{label}</span>
-      </div>
-      <div className="flex items-baseline gap-1.5 flex-wrap">
-        <span
-          className="font-bold uppercase tabular-nums leading-none"
-          style={{ color: valueColor ?? 'rgba(255,255,255,.95)', fontSize: 'clamp(14px, 2vw, 18px)', letterSpacing: '-0.01em' }}
-        >{value}</span>
-        {sub && (
-          <span
-            className="font-medium tabular-nums leading-none"
-            style={{ color: 'rgba(255,255,255,.4)', fontSize: 'clamp(10px, 1.3vw, 12px)' }}
-          >{sub}</span>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// V6.4 computeModoInfo — derives the MODO cell label + icon token using
-// the directive's speed thresholds:
-//   <5 km/h  → A PIE       (Footprints)
-//   5-25     → MOTO        (Bike)
-//   25-60    → COLECTIVO   (Bus)
-//   >60      → AUTO        (Car)
-// When the sleep inference engine reports SLEEP, the cell shows DORMIDA.
-// When speed is null/0 and no sleep signal, shows QUIETA (still).
-function computeModoInfo(speedKmh: number | null, inferredMode: string): { label: string; iconToken: string } {
-  const upper = (inferredMode || '').toUpperCase()
-  if (upper === 'SLEEP' || upper === 'DORMIDA') return { label: 'DORMIDA', iconToken: 'sleep' }
-  if (speedKmh == null || speedKmh < 0) return { label: 'QUIETA', iconToken: 'still' }
-  if (speedKmh < 5) return { label: 'A PIE', iconToken: 'walk' }
-  if (speedKmh < 25) return { label: 'MOTO', iconToken: 'moto' }
-  if (speedKmh < 60) return { label: 'COLECTIVO', iconToken: 'bus' }
-  return { label: 'AUTO', iconToken: 'car' }
-}
-
-// V6.6 DEVICE_MAP — substring-based alias mapping for Google obfuscated
-// device identifiers. The Google Location Sharing RPC payload carries
-// obfuscated device fingerprints (long alphanumeric strings). Two known
-// fingerprints are mapped by SUBSTRING match (not exact equality), so the
-// alias still resolves even if the surrounding token rotates between
-// sessions. New fingerprints can be added here as they're discovered.
-//
-// Directives (per V6.6 DEVICE_ALIAS_MAPPING):
-//   - rawID contains 'iyAM' → 'Samsung A16'
-//   - rawID contains 'jgDg'  → 'TCL 408'
-//   - unrecognized ID        → 'Desconocido' or last 4 digits (to avoid
-//                              showing a raw 22-char Google fingerprint)
-//
-// V6.8 DYNAMIC_DEVICE_INFERENCE — the static DEVICE_MAP is now a FALLBACK
-// only. The primary path is `inferDeviceFromTelemetry()` which profiles
-// the live telemetry fingerprint (battery decay rate, GPS polling cadence,
-// network-type volatility) and matches it against historical profiles
-// stored in localStorage. The static substring map still wins when a known
-// token appears (high-confidence exact match), but for unrecognized IDs the
-// inference engine takes over — surfacing "Samsung A16" or "TCL 408" based
-// on behavioural signatures rather than waiting for Google's opaque token.
-const DEVICE_MAP: Array<{ substring: string; alias: string }> = [
-  { substring: 'iyAM', alias: 'Samsung A16' },
-  { substring: 'jgDg', alias: 'TCL 408' },
-]
-
-// ══════════════════════════════════════════════════════════════════
-// V6.8 DYNAMIC_DEVICE_INFERENCE — Telemetry-Fingerprint Device Profiler
-// ══════════════════════════════════════════════════════════════════
-// Replaces the static 'ziQI' token assignment with a comparative inference
-// engine. The engine audits three telemetry signals on every fresh poll:
-//
-//   1. BATTERY DECAY RATE (% per hour)
-//      - Samsung A16 (5000 mAh, Exynos 1380): moderate drain ≈ 2-4 %/hr idle
-//      - TCL 408 (4000 mAh, Helio G37): faster drain ≈ 4-7 %/hr idle
-//
-//   2. GPS POLLING CADENCE (avg seconds between location updates)
-//      - Samsung A16: tighter cadence (5-9 s) — GNSS chip is newer
-//      - TCL 408: looser cadence (8-16 s) — cheaper GNSS, longer fix intervals
-//
-//   3. NETWORK-TYPE VOLATILITY (transitions per 10 min between WIFI/4G/5G)
-//      - Samsung A16: stable (≤1 transition) — preferred-network lock
-//      - TCL 408: volatile (≥2 transitions) — modem drops to 3G/edge often
-//
-// The fingerprint is cross-referenced with the historical profile stored in
-// localStorage('stracker_device_history'). When the live fingerprint matches
-// the Samsung A16 historical centroid within tolerance, the label resolves
-// to 'Samsung A16'. If the fingerprint shows ABRUPT VARIATIONS (battery
-// decay jumps from 3 %/hr to 6 %/hr, or polling cadence oscillates from
-// 6 s to 14 s), the engine flags the anomaly and switches the label to
-// 'TCL 408' — the audit signature of the cheaper hardware profile.
-//
-// Confidence threshold: ≥0.62 required to override the static fallback.
-// Below the threshold, the engine returns null and the caller falls back
-// to the DEVICE_MAP / "Desconocido · XXXX" path.
-// ══════════════════════════════════════════════════════════════════
-
-interface TelemetrySample {
-  ts: number              // epoch ms
-  batteryPct: number | null
-  networkType: string | null  // 'WIFI' | '4G' | '5G' | '3G' | etc.
-  gpsAccuracy: number | null  // meters
-}
-
-interface DeviceProfile {
-  label: string
-  // Each metric is a [centroid, tolerance] pair — the engine scores the
-  // live fingerprint by how many metrics fall within tolerance.
-  batteryDecayPerHour: [number, number]   // %/hr, tolerance ±
-  gpsPollingCadenceS: [number, number]    // seconds, tolerance ±
-  networkVolatilityPer10Min: [number, number]  // transitions, tolerance ±
-}
-
-// Known device profiles (heuristic ranges based on hardware specs +
-// observed telemetry patterns in the stracker deployment history).
-const DEVICE_PROFILES: DeviceProfile[] = [
-  {
-    label: 'Samsung A16',
-    batteryDecayPerHour: [3.0, 2.0],   // 1-5 %/hr
-    gpsPollingCadenceS: [7.0, 3.0],    // 4-10 s
-    networkVolatilityPer10Min: [0.5, 1.0], // 0-1.5 transitions
-  },
-  {
-    label: 'TCL 408',
-    batteryDecayPerHour: [5.5, 2.0],   // 3.5-7.5 %/hr
-    gpsPollingCadenceS: [12.0, 4.0],   // 8-16 s
-    networkVolatilityPer10Min: [2.5, 1.5], // 1-4 transitions
-  },
-]
-
-const DEVICE_HISTORY_KEY = 'stracker_device_history'
-const DEVICE_HISTORY_MAX = 60 // keep last 60 samples (~3 min @ 3s poll)
-
-// V6.10 EPHEMERAL_TOKEN_COLLAPSE — persistent "primary device" profile.
-// Google's Location Sharing RPC rotates the obfuscated device token on
-// every session (ziQI → U-AE → ymQ0 → ...). The V6.8 inference engine
-// resolves the HARDWARE profile (Samsung A16 / TCL 408) from telemetry
-// fingerprints, but when confidence is low it falls back to
-// "Desconocido · XXXX" — and XXXX changes every rotation, fragmenting
-// the operator's mental model of "which device am I tracking?"
-//
-// V6.10 fix: once the inference engine reaches high confidence (≥0.62)
-// OR the static DEVICE_MAP matches a known token, we PERSIST that label
-// to localStorage as the "primary device". On all subsequent polls —
-// even when Google rotates to a new opaque token and inference confidence
-// temporarily drops — cleanDeviceLabel() returns the stored primary
-// device instead of "Desconocido · XXXX". The hardware doesn't change
-// just because Google's session token did.
-const PRIMARY_DEVICE_KEY = 'stracker_primary_device'
-const PRIMARY_DEVICE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
-
-interface PrimaryDeviceRecord {
-  label: string        // "Samsung A16" | "TCL 408" | "Dispositivo Principal"
-  pinnedAt: number     // epoch ms — when the primary was last confirmed
-  lastRawToken?: string // last 4 chars of the raw token that pinned it (audit)
-}
-
-function readPrimaryDevice(): PrimaryDeviceRecord | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const raw = window.localStorage.getItem(PRIMARY_DEVICE_KEY)
-    if (!raw) return null
-    const rec: PrimaryDeviceRecord = JSON.parse(raw)
-    // Expire after 7 days of no confirmation (device genuinely changed).
-    if (Date.now() - rec.pinnedAt > PRIMARY_DEVICE_MAX_AGE_MS) return null
-    return rec
-  } catch { return null }
-}
-
-function writePrimaryDevice(rec: PrimaryDeviceRecord) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(PRIMARY_DEVICE_KEY, JSON.stringify(rec))
-  } catch { /* localStorage full or unavailable */ }
-}
-
-// Persist a telemetry sample to localStorage for historical comparison.
-function pushTelemetrySample(sample: TelemetrySample) {
-  if (typeof window === 'undefined') return
-  try {
-    const raw = window.localStorage.getItem(DEVICE_HISTORY_KEY)
-    const list: TelemetrySample[] = raw ? JSON.parse(raw) : []
-    list.push(sample)
-    // Trim to last N samples (rolling window)
-    while (list.length > DEVICE_HISTORY_MAX) list.shift()
-    // Drop samples older than 30 min (avoid stale fingerprints)
-    const cutoff = Date.now() - 30 * 60 * 1000
-    const fresh = list.filter(s => s.ts >= cutoff)
-    window.localStorage.setItem(DEVICE_HISTORY_KEY, JSON.stringify(fresh))
-  } catch { /* localStorage full or unavailable */ }
-}
-
-// Compute the live telemetry fingerprint from the rolling history.
-function computeTelemetryFingerprint(history: TelemetrySample[]): {
-  batteryDecayPerHour: number | null
-  gpsPollingCadenceS: number | null
-  networkVolatilityPer10Min: number | null
-  sampleCount: number
-} {
-  if (history.length < 3) {
-    return { batteryDecayPerHour: null, gpsPollingCadenceS: null, networkVolatilityPer10Min: null, sampleCount: history.length }
-  }
-  // Battery decay rate: linear regression of batteryPct over elapsed hours.
-  // Only uses samples where batteryPct is non-null AND device is NOT charging
-  // (charging flattens the curve and would corrupt the drain measurement).
-  const batteryPts = history
-    .filter(s => s.batteryPct != null)
-    .map(s => ({ ts: s.ts, pct: s.batteryPct as number }))
-  let batteryDecayPerHour: number | null = null
-  if (batteryPts.length >= 4) {
-    const first = batteryPts[0]
-    const last = batteryPts[batteryPts.length - 1]
-    const elapsedHr = (last.ts - first.ts) / 3_600_000
-    if (elapsedHr > 0.005) { // ≥18s of data
-      batteryDecayPerHour = (first.pct - last.pct) / elapsedHr
-      // Clamp to physically plausible range
-      batteryDecayPerHour = Math.max(-5, Math.min(40, batteryDecayPerHour))
-    }
-  }
-  // GPS polling cadence: average delta between consecutive timestamps in seconds.
-  let gpsPollingCadenceS: number | null = null
-  if (history.length >= 3) {
-    let sumDelta = 0
-    let count = 0
-    for (let i = 1; i < history.length; i++) {
-      const dt = (history[i].ts - history[i - 1].ts) / 1000
-      if (dt > 0 && dt < 120) { // ignore gaps > 2 min (network dropout)
-        sumDelta += dt
-        count++
-      }
-    }
-    if (count > 0) gpsPollingCadenceS = sumDelta / count
-  }
-  // Network volatility: count transitions between distinct network types
-  // in the most recent 10-minute window.
-  let networkVolatilityPer10Min: number | null = null
-  const tenMinAgo = Date.now() - 10 * 60 * 1000
-  const recent = history.filter(s => s.ts >= tenMinAgo && s.networkType)
-  if (recent.length >= 2) {
-    let transitions = 0
-    for (let i = 1; i < recent.length; i++) {
-      if (recent[i].networkType !== recent[i - 1].networkType) transitions++
-    }
-    // Normalize to per-10-min rate (the window IS 10 min, so this is the raw count)
-    networkVolatilityPer10Min = transitions
-  }
-  return { batteryDecayPerHour, gpsPollingCadenceS, networkVolatilityPer10Min, sampleCount: history.length }
-}
-
-// Score a live fingerprint against a known device profile. Returns 0-1.
-function scoreProfile(fp: ReturnType<typeof computeTelemetryFingerprint>, profile: DeviceProfile): number {
-  let hits = 0
-  let total = 0
-  // Battery decay
-  if (fp.batteryDecayPerHour != null) {
-    total++
-    const [centroid, tol] = profile.batteryDecayPerHour
-    if (Math.abs(fp.batteryDecayPerHour - centroid) <= tol) hits++
-  }
-  // GPS cadence
-  if (fp.gpsPollingCadenceS != null) {
-    total++
-    const [centroid, tol] = profile.gpsPollingCadenceS
-    if (Math.abs(fp.gpsPollingCadenceS - centroid) <= tol) hits++
-  }
-  // Network volatility
-  if (fp.networkVolatilityPer10Min != null) {
-    total++
-    const [centroid, tol] = profile.networkVolatilityPer10Min
-    if (Math.abs(fp.networkVolatilityPer10Min - centroid) <= tol) hits++
-  }
-  if (total === 0) return 0
-  return hits / total
-}
-
-// V6.8 main entry — infer the device label from the live telemetry fingerprint.
-// Returns the alias + confidence, or null when confidence is below threshold.
-function inferDeviceFromTelemetry(history: TelemetrySample[]): {
-  label: string
-  confidence: number
-  anomaly: boolean
-} | null {
-  const fp = computeTelemetryFingerprint(history)
-  // Need at least 5 samples for a stable fingerprint
-  if (fp.sampleCount < 5) return null
-  let bestLabel: string | null = null
-  let bestScore = 0
-  for (const profile of DEVICE_PROFILES) {
-    const score = scoreProfile(fp, profile)
-    if (score > bestScore) {
-      bestScore = score
-      bestLabel = profile.label
-    }
-  }
-  // Confidence threshold: ≥0.62 (i.e. 2/3 metrics within tolerance)
-  if (!bestLabel || bestScore < 0.62) return null
-  // Anomaly detection: if battery decay > 6 %/hr OR polling cadence varies
-  // by >2× the centroid, flag the anomaly (the label still resolves, but the
-  // caller can surface the anomaly in the UI).
-  let anomaly = false
-  if (fp.batteryDecayPerHour != null && fp.batteryDecayPerHour > 6) anomaly = true
-  if (fp.gpsPollingCadenceS != null && (fp.gpsPollingCadenceS < 4 || fp.gpsPollingCadenceS > 18)) anomaly = true
-  return { label: bestLabel, confidence: bestScore, anomaly }
-}
-
-// V6.8 cleanDeviceLabel — resolves the device label for display.
-// V6.10 EPHEMERAL_TOKEN_COLLAPSE: Google rotates the obfuscated device token
-// on every session. The hardware doesn't change. This function now persists
-// the first high-confidence resolution (inferred OR static-map match) to
-// localStorage as the "primary device", and returns that stored label for
-// ALL subsequent obfuscated tokens — collapsing the ephemeral token noise
-// into a single unified entity.
-//
-// Priority chain (V6.10 reordered):
-//   (1) null / 'Desconocido' / empty → check primary device cache, else '—'
-//   (2) telemetry-inferred label (V6.8) with confidence ≥0.62 → PIN as
-//       primary device, return inferred label
-//   (3) substring match against DEVICE_MAP (known tokens) → PIN as primary,
-//       return alias
-//   (4) clean model name (iPhone16,2 / Pixel 8 Pro / SM-S918B) → passthrough
-//   (5) unrecognized obfuscated ID (16+ chars) → check primary device cache;
-//       if a primary exists, return it (collapse the ephemeral token);
-//       else 'Desconocido · XXXX' (last 4 digits, first-run fallback)
-function cleanDeviceLabel(label: string, inferred?: { label: string; confidence: number; anomaly: boolean } | null): string {
-  // V6.10: Helper — persist a resolved label as the primary device.
-  function pinPrimary(resolved: string, rawToken?: string) {
-    writePrimaryDevice({
-      label: resolved,
-      pinnedAt: Date.now(),
-      lastRawToken: rawToken ? rawToken.slice(-4) : undefined,
-    })
-  }
-
-  if (!label || label === 'Desconocido') {
-    // V6.8: even when the raw label is missing, the inference engine may
-    // still resolve a profile from the telemetry fingerprint alone.
-    if (inferred && inferred.confidence >= 0.62) {
-      pinPrimary(inferred.label)
-      return inferred.label
-    }
-    // V6.10: fall back to the persisted primary device (collapses token gaps).
-    const primary = readPrimaryDevice()
-    if (primary) return primary.label
-    return '—'
-  }
-
-  // V6.8 PRIORITY 1: telemetry-based inference wins for UNRECOGNIZED raw IDs.
-  // V6.10: lowered threshold from 16 to 10 chars — Google's ephemeral session
-  // tokens vary in length (ziQI=4, U-AE=4, IOzok7SI_fDyDQ=14). The 16-char
-  // threshold missed the shorter tokens, showing raw IDs instead of the
-  // collapsed primary device label. 10 chars catches all observed Google
-  // tokens while preserving clean model names (iPhone16,2=10 has a comma →
-  // fails /^[A-Za-z0-9_-]+$/; SM-S918B=8 < 10; Pixel 8 has a space).
-  const isObfuscatedId = label.length >= 10 && !/\s/.test(label) && /^[A-Za-z0-9_-]+$/.test(label)
-  if (isObfuscatedId && inferred && inferred.confidence >= 0.62) {
-    // V6.10: pin the inferred hardware profile as the primary device.
-    pinPrimary(inferred.label, label)
-    return inferred.label
-  }
-
-  // V6.6 PRIORITY 2: substring match against the static DEVICE_MAP.
-  for (const entry of DEVICE_MAP) {
-    if (label.includes(entry.substring)) {
-      // V6.10: pin the matched alias as the primary device.
-      pinPrimary(entry.alias, label)
-      return entry.alias
-    }
-  }
-
-  // V6.8 PRIORITY 3: inference-only fallback for obfuscated IDs that DON'T
-  // match any static token but DO match a telemetry profile (lower bar).
-  if (isObfuscatedId && inferred && inferred.confidence >= 0.5) {
-    pinPrimary(inferred.label, label)
-    return inferred.label
-  }
-
-  // V6.10 EPHEMERAL_TOKEN_COLLAPSE — the core fix.
-  // Google obfuscated IDs: 16+ chars, no spaces, mostly alphanumeric.
-  // The token rotates every session but the HARDWARE is the same. If we've
-  // already pinned a primary device (from a prior high-confidence poll),
-  // return that label instead of showing "Desconocido · XXXX" with a
-  // different XXXX each time. This collapses the ephemeral token noise.
-  if (isObfuscatedId) {
-    const primary = readPrimaryDevice()
-    if (primary) {
-      // Primary device exists — return the persisted hardware label.
-      // The operator sees "Samsung A16" (or whatever was pinned) consistently
-      // across ALL token rotations, not "Desconocido · ymQ0" then "· U-AE".
-      return primary.label
-    }
-    // No primary pinned yet (first run, or inference hasn't reached threshold).
-    // Show the last-4 fingerprint as a temporary hint. As soon as the inference
-    // engine accumulates ≥5 samples and reaches confidence ≥0.62, the label
-    // will pin to the hardware profile and stay there.
-    return `Desconocido · ${label.slice(-4)}`
-  }
-
-  // Clean model name (iPhone16,2 / Pixel 8 Pro / SM-S918B) — passthrough.
-  return label
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1120,26 +609,14 @@ function useRoutedTrail(rawPoints: { lat: number; lng: number; t?: string }[]): 
   const isRoutingRef = useRef(false)
 
   useEffect(() => {
-    // V6.8 GHOST_TRAIL_THRESHOLD — when there's exactly 1 valid raw point
-    // (device stationary, single ping in the 24h window), return it as a
-    // single-element array so the GhostTrail component can render a
-    // CircleMarker (stationary trace) instead of bailing on length < 2.
-    // The previous implementation returned [] here, which caused the trail
-    // to vanish entirely for single-point histories.
-    if (!rawPoints || rawPoints.length === 0) {
+    if (!rawPoints || rawPoints.length < 2) {
       requestAnimationFrame(() => setRoutedPoints([]))
       return
     }
 
     const validPts = rawPoints.filter(p => p.lat != null && p.lng != null && isFinite(p.lat) && isFinite(p.lng))
-    if (validPts.length === 0) {
+    if (validPts.length < 2) {
       requestAnimationFrame(() => setRoutedPoints([]))
-      return
-    }
-    // V6.8: single valid point → return as single-element array. The
-    // GhostTrail component detects length === 1 and renders a CircleMarker.
-    if (validPts.length === 1) {
-      requestAnimationFrame(() => setRoutedPoints([[validPts[0].lat, validPts[0].lng]]))
       return
     }
 
@@ -1156,29 +633,12 @@ function useRoutedTrail(rawPoints: { lat: number; lng: number; t?: string }[]): 
         const from = validPts[i]
         const to = validPts[i + 1]
 
-        // V6.8 GHOST_TRAIL_THRESHOLD — static-device resilience.
-        // The previous implementation SKIPPED segments where the two points
-        // were within 15m of each other (cheaper than calling OSRM for a
-        // 0-meter route). But when the device is geographically static for
-        // a minute (multiple pings in the same radius), EVERY segment was
-        // skipped and only the FIRST point landed in `allRoutedPts`. The
-        // GhostTrail component then bailed (`length < 2`) and the historical
-        // trace vanished — making it look like no data existed at all.
-        //
-        // Fix: skip the OSRM call (still wasteful for tiny deltas) but
-        // ALWAYS push both endpoints to `allRoutedPts`. The polyline then
-        // renders as a visible dot/blob at the stationary location, which
-        // is the correct visual: "the target stayed here for N minutes".
-        // This preserves trace visibility even when delta distance ≈ 0.
+        // Skip if points are too close (<15m) — just use the point directly
         const dLat = to.lat - from.lat
         const dLng = to.lng - from.lng
         const distM = Math.sqrt(dLat * dLat * 111000 * 111000 + dLng * dLng * 85000 * 85000)
         if (distM < 15) {
-          // Push both endpoints so the trail preserves the stationary
-          // signature. Dedup is avoided: even if `to` equals `from`, the
-          // duplicate coordinate is a valid "still here" telemetry marker.
           if (allRoutedPts.length === 0) allRoutedPts.push([from.lat, from.lng])
-          allRoutedPts.push([to.lat, to.lng])
           continue
         }
 
@@ -1279,23 +739,7 @@ async function loadCachedGhostrailPoints(): Promise<{ lat: number; lng: number; 
 // operator can see exactly what's arriving from the server. Logs are gated
 // behind a module-level flag to avoid console spam in production.
 // ══════════════════════════════════════════════════════════════════
-// RA18: Silenced MAP_DATA_SANITIZER debug log — it spammed the console with
-// "typeof=undefined isArray=false" on every poll when ghostrail_pts is undefined
-// (expected when Google returns no_location). This was misread as an error
-// ("debe ser array"). Now only logs when the input is NOT undefined/null/array
-// (i.e. only when there's an actual unexpected type to diagnose).
-// RA24 (stracker_production_sanitization): This debug log is now gated by the
-// SAME hidden flag as the DriftDebugMarker visual overlay — ?driftDebug=1 URL
-// param or localStorage 'stracker_drift_debug=1'. In production (no flag), this
-// is `false` and the log NEVER fires. Evaluated once at module load so loading
-// the page with ?driftDebug=1 enables both the visual overlay AND this log.
-const MAP_DATA_DEBUG = typeof window !== 'undefined' && (() => {
-  try {
-    const urlOn = new URLSearchParams(window.location.search).get('driftDebug') === '1'
-    const lsOn = window.localStorage.getItem('stracker_drift_debug') === '1'
-    return urlOn || lsOn
-  } catch { return false }
-})()
+const MAP_DATA_DEBUG = process.env.NODE_ENV === 'development'
 let mapDataDebugLogged = 0 // rate-limit: only log the first 20 calls per session
 
 function sanitizePointsArray(incoming: unknown, source: string): { lat: number; lng: number; t?: string; zone?: string }[] {
@@ -1405,35 +849,16 @@ function saveLastPosition(lat: number, lng: number) {
     localStorage.setItem(LAST_POS_STORAGE_KEY, JSON.stringify({ lat, lng, t: Date.now() }))
   } catch { /* localStorage unavailable */ }
 }
-function loadLastPosition(): { lat: number; lng: number; t?: number } | null {
+function loadLastPosition(): { lat: number; lng: number } | null {
   try {
     const raw = localStorage.getItem(LAST_POS_STORAGE_KEY)
     if (!raw) return null
     const p = JSON.parse(raw)
     if (typeof p.lat === 'number' && typeof p.lng === 'number' && isFinite(p.lat) && isFinite(p.lng)) {
-      // RA28: also surface the persisted timestamp `t` so the StaleMarker can
-      // render a "Última señal hace X min" label. Backward compatible: older
-      // cache entries without `t` simply omit it.
-      return { lat: p.lat, lng: p.lng, t: typeof p.t === 'number' ? p.t : undefined }
+      return { lat: p.lat, lng: p.lng }
     }
   } catch { /* corrupt */ }
   return null
-}
-
-// RA28: humanize a millisecond age into "hace X min" / "hace X h" / "hace X d".
-// Used by the StaleMarker label so the operator understands how stale the
-// last-known position is. Returns '' if `t` is missing or in the future.
-function formatStaleAge(t?: number): string {
-  if (!t || typeof t !== 'number' || !isFinite(t)) return ''
-  const diffMs = Date.now() - t
-  if (diffMs < 0) return ''
-  const min = Math.floor(diffMs / 60000)
-  if (min < 1) return 'hace instantes'
-  if (min < 60) return `hace ${min} min`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `hace ${hr} h`
-  const days = Math.floor(hr / 24)
-  return `hace ${days} d`
 }
 
 function readPersistedZoom(): number {
@@ -1498,10 +923,10 @@ function AccordionSection({
         className="w-full flex items-center justify-between py-2 px-1 text-left"
         onClick={onToggle}
       >
-        <span className="font-bold uppercase tracking-[0.2em] text-white/25" style={{ fontSize: 'clamp(12px, 1.7vw, 15px)' }}>{title}</span>
+        <span className="font-bold uppercase tracking-[0.2em] text-white/25" style={{ fontSize: 'clamp(8px, 1.7vw, 9px)' }}>{title}</span>
         <span
           className="text-white/20 transition-transform duration-200"
-          style={{ fontSize: 13, transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)', display: 'inline-flex', transition: 'transform 150ms ease' }}
+          style={{ fontSize: 10, transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)', display: 'inline-flex', transition: 'transform 150ms ease' }}
         >
           <ChevronRight size={12} strokeWidth={2.5} />
         </span>
@@ -1707,11 +1132,7 @@ function deriveMovementMode(pyState: any, lastValidMode: string | null): {
     speedLabel = ''
     compactValue = 'NONI'
   } else if (finalMode === 'STILL') {
-    // V6.8 JITTER_AWARENESS_UI — speed stays at 0.0 km/h STRICT per the API
-    // report. The decimal form (0.0) matches the API's numeric format exactly;
-    // when jitter is detected, a secondary activity pulse appears in the panel
-    // footer (jitterDetected badge) rather than falsifying the speed reading.
-    speedLabel = '0.0 km/h'
+    speedLabel = '0 km/h'
     compactValue = ''
   } else if (speedKmh !== null && speedKmh > 0) {
     speedLabel = `${speedKmh.toFixed(1)} km/h`
@@ -1731,13 +1152,13 @@ function deriveMovementMode(pyState: any, lastValidMode: string | null): {
 // Inferred sources: movement, speed, network bursts, location updates,
 //   battery discharge, WhatsApp activity proxy, foreground activity
 // Rule: If user actively using WhatsApp, screen cannot be OFF.
-// Output: ON · hace 3m / OFF · hace 27m
+// Output: 📱ON · hace 3m / 📱OFF · hace 27m
 // ══════════════════════════════════════════════════════════════════
 function deriveScreenState(pyState: any): {
   isOn: boolean
-  label: string      // "ON · hace 3m" or "OFF · hace 27m"
+  label: string      // "📱ON · hace 3m" or "📱OFF · hace 27m"
   shortLabel: string  // "ON · 3m" or "OFF · 27m" for HUD badge
-  icon: string       // phone icon token (resolved by lucide Smartphone)
+  icon: string       // 📱 (always phone icon)
   color: string      // monochrome white (V5.5)
   confidence: number  // 0-100 confidence score
   source: string     // "direct" | "inferred_movement" | "inferred_network" | etc.
@@ -1838,13 +1259,13 @@ function deriveScreenState(pyState: any): {
     shortLabel = isOn ? 'ON' : 'OFF'
   }
 
-  const label = shortLabel
+  const label = `📱${shortLabel}`
 
   return {
     isOn,
     label,
     shortLabel,
-    icon: '',
+    icon: '📱',
     color: isOn ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)',
     confidence,
     source,
@@ -1856,50 +1277,26 @@ function deriveScreenState(pyState: any): {
 // ══════════════════════════════════════════════════════════════════
 function deriveNetwork(pyState: any): {
   type: string      // WIFI / 4G / OFFLINE
-  icon: string      // token (resolved by lucide Wifi/Smartphone/WifiOff)
+  icon: string      // 📶 📱 📵
   color: string
 } {
   const raw = (pyState?.network?.type || '').toUpperCase()
-  let type = 'Red Móvil'
-  let icon = ''
-  let color = 'rgba(255,255,255,.55)'
+  let type = 'OFFLINE'
+  let icon = '📵'
+  let color = 'rgba(255,255,255,.4)'
 
-  // V6.6 CONNECTION_STATUS_AUDIT — the backend's _infer_network_type() GUESSES
-  // WIFI purely from accuracy+speed (no real connection_state signal from the
-  // device). Per directive "el frontend solo muestre 'WIFI' si el payload
-  // explícitamente reporta estado 1", we DO NOT trust the inferred WIFI — we
-  // only surface WIFI when an explicit positive signal is present.
-  // Today the backend never emits an explicit wifi_state field, so the WIFI
-  // branch is unreachable until a real connection_state arrives. Until then,
-  // inferred 'WIFI' is downgraded to '4G/5G' (mobile network) which is the
-  // honest default for a phone on Google Location Sharing.
-  const explicitWifiOn =
-    pyState?.network?.wifi_state === 1 ||
-    pyState?.network?.connection_state === 1 ||
-    pyState?.network?.wifi === true
-
-  if (explicitWifiOn) {
+  if (raw.includes('WIFI')) {
     type = 'WIFI'
-    icon = ''
+    icon = '📶'
     color = 'rgba(255,255,255,.85)'
-  } else if (raw.includes('5G')) {
-    type = '4G/5G'
-    icon = ''
-    color = 'rgba(255,255,255,.75)'
   } else if (raw.includes('4G') || raw.includes('LTE') || raw.includes('MOBILE') || raw.includes('CELLULAR')) {
-    type = '4G/5G'
-    icon = ''
-    color = 'rgba(255,255,255,.75)'
+    type = '4G'
+    icon = '📱'
+    color = 'rgba(255,255,255,.7)'
   } else if (raw.includes('3G') || raw.includes('2G')) {
-    type = 'Red Móvil'
-    icon = ''
-    color = 'rgba(255,255,255,.6)'
-  } else {
-    // UNKNOWN / OFFLINE / empty / inferred-WIFI → honest fallback.
-    // 'Red Móvil' is the safe default (better than guessing WIFI).
-    type = 'Red Móvil'
-    icon = ''
-    color = 'rgba(255,255,255,.55)'
+    type = raw.includes('3G') ? '3G' : '2G'
+    icon = '📱'
+    color = 'rgba(255,255,255,.7)'
   }
 
   return { type, icon, color }
@@ -1907,7 +1304,7 @@ function deriveNetwork(pyState: any): {
 
 // ══════════════════════════════════════════════════════════════════
 // PLACE BADGE ENGINE — L1-L5: SEMANTIC LOCATION CLASSIFICATION
-// Priority: BUILDING > NIGHTLIFE > WORK > HOME (only ONE shown)
+// Priority: 🏢Xm > 💃 > 💼 > 🏠 (only ONE shown)
 // L2: Home — geofence <60m, stay >10min, confidence ≥90%
 // L3: Work — geofence <80m, stay >10min, confidence ≥90%
 // L4: Nightlife — known venues + night hours + stay >20min, confidence ≥80%
@@ -1942,7 +1339,7 @@ type PlaceBadgeType = 'HOME' | 'WORK' | 'NIGHTLIFE' | 'BUILDING' | null
 
 interface PlaceBadge {
   type: PlaceBadgeType
-  icon: string         // token (home / work / nightlife / building)
+  icon: string         // 🏠 / 💼 / 💃 / 🏢
   value: string        // "" / "18m" / "24m"
   color: string
   confidence: number
@@ -2003,7 +1400,7 @@ function derivePlaceBadge(pyState: any): PlaceBadge {
   }
 
   // ── PRIORITY EVALUATION ──
-  // BUILDING > NIGHTLIFE > WORK > HOME
+  // 🏢 > 💃 > 💼 > 🏠
 
   // L5: BUILDING — show if confidence >= 85% and not at home/work
   if (buildingConfidence >= 85 && estimatedHeightM !== null && estimatedHeightM >= 12) {
@@ -2013,7 +1410,7 @@ function derivePlaceBadge(pyState: any): PlaceBadge {
     if (distToHome > HOME_GEOFENCE.radiusM && distToWork > WORK_GEOFENCE.radiusM) {
       return {
         type: 'BUILDING',
-        icon: '',
+        icon: '🏢',
         value: `${estimatedHeightM}m`,
         color: 'rgba(255,255,255,0.7)',
         confidence: buildingConfidence,
@@ -2032,7 +1429,7 @@ function derivePlaceBadge(pyState: any): PlaceBadge {
       if (confidence >= 80) {
         return {
           type: 'NIGHTLIFE',
-          icon: '',
+          icon: '💃',
           value: '',
           color: 'rgba(255,255,255,0.85)',
           confidence,
@@ -2055,7 +1452,7 @@ function derivePlaceBadge(pyState: any): PlaceBadge {
     if (confidence >= 90) {
       return {
         type: 'WORK',
-        icon: '',
+        icon: '💼',
         value: '',
         color: 'rgba(255,255,255,0.85)',
         confidence,
@@ -2074,7 +1471,7 @@ function derivePlaceBadge(pyState: any): PlaceBadge {
     if (confidence >= 90) {
       return {
         type: 'HOME',
-        icon: '',
+        icon: '🏠',
         value: '',
         color: 'rgba(255,255,255,0.85)',
         confidence,
@@ -2107,15 +1504,7 @@ export default function TrackerView() {
   const [wsConnected, setWsConnected] = useState(false)
   const [kernelSeq, setKernelSeq] = useState(0)
   const [snapshotVersion, setSnapshotVersion] = useState(0)
-  // V6.7 SATELLITE_PERSISTENCE: map layer style survives F5 / session restart.
-  // Stored under 'tracker_map_style' ('satellite' | 'dark'). Loaded on init so
-  // the operator's last choice is honored immediately (no flash of dark mode
-  // when they had satellite selected). Per directive "localStorage.setItem(
-  // 'tracker_map_style', currentStyle)".
-  const [isSatellite, setIsSatellite] = useState(() => {
-    if (typeof window === 'undefined') return false
-    try { return window.localStorage.getItem('tracker_map_style') === 'satellite' } catch { return false }
-  })
+  const [isSatellite, setIsSatellite] = useState(false)
   const [cookiesRefreshing, setCookiesRefreshing] = useState(false)
   const [lastCookieRefresh, setLastCookieRefresh] = useState<string>('')
   // V5.8 SECURITY_FORTRESS: async-loaded encrypted cache points.
@@ -2149,17 +1538,6 @@ export default function TrackerView() {
   // null = live (show current state). number = scrub to that GhostRail index.
   const [timeScrubIndex, setTimeScrubIndex] = useState<number | null>(null)
   const [scrubbing, setScrubbing] = useState(false)
-
-  // V6.8 AUTO_LIVE_MODE_ENFORCEMENT — Live Mode is FORCED ON at mount.
-  // The previous implementation relied on `scrubbing=false && timeScrubIndex=null`
-  // implicitly meaning "live", but the audit found that without an explicit
-  // state, the UI sometimes failed to engage Live Mode on first render (the
-  // pin didn't appear until the user manually clicked the Live icon in the
-  // TimelineBar). This explicit `isLiveMode=true` default guarantees Live
-  // Mode is active the instant the component mounts, with no user interaction
-  // required. The state syncs with the scrubbing state: when the user drags
-  // the timeline scrubber, `isLiveMode` flips false; clicking LIVE restores it.
-  const [isLiveMode, setIsLiveMode] = useState(true)
 
   // ── MAGIA3: Haptic Heartbeat ── Track previous movement mode to detect transitions
   const prevMovementModeRef = useRef<string | null>(null)
@@ -2242,17 +1620,10 @@ export default function TrackerView() {
       return true
     }
 
-    // ── SPATIAL DEDUP: within ~2m (V6.10 GHOST_TRAIL_FORCED_RENDER) ──
-    // V6.10 lowered this from 0.00005° (~5.5m) to 0.000018° (~2m) to match
-    // the V6.9 backend's DUPLICATE_MIN_METERS=2. The previous 5.5m threshold
-    // was a SMOOTHING FILTER that discarded micro-movements (jitter) the
-    // backend had force-logged at 0.0 km/h — hiding the in-place permanence
-    // signature. With 2m, all V6.9 jitter points (2-5m deltas) pass through
-    // and the polyline connects them directly, showing the real spatial
-    // pattern of the device's micro-activity inside a closed perimeter.
+    // ── SPATIAL DEDUP: within ~5m ──
     function isNearExisting(p: { lat: number; lng: number }, existing: { lat: number; lng: number }[]): boolean {
       return existing.some(ep =>
-        Math.abs(ep.lat - p.lat) < 0.000018 && Math.abs(ep.lng - p.lng) < 0.000018
+        Math.abs(ep.lat - p.lat) < 0.00005 && Math.abs(ep.lng - p.lng) < 0.00005
       )
     }
 
@@ -2415,27 +1786,6 @@ export default function TrackerView() {
     // the backend hasn't pushed a new position (catches viewport drift).
     const id = setInterval(() => setDriftTick(t => (t + 1) % 1000000), 2000)
     return () => clearInterval(id)
-  }, [])
-
-  // ══════════════════════════════════════════════════════════════════
-  // RA23 (stracker_ui_sniper_reticle_removal): The DriftDebugMarker — the
-  // white crosshair at the RAW backend coordinate (a.k.a. "sniper reticle")
-  // — is a DEBUG-ONLY overlay. It is now HIDDEN BY DEFAULT in production.
-  //
-  // The overlay can be re-enabled for forensic audits WITHOUT a rebuild via:
-  //   - URL param:  ?driftDebug=1
-  //   - localStorage:  localStorage.setItem('stracker_drift_debug', '1')
-  //
-  // The DriftDebugMarker component itself is NOT deleted — only its render
-  // is gated. driftDebugRef / computeDriftReport / map-sync logic all keep
-  // running so the drift telemetry stays available in the console + sheet.
-  // ══════════════════════════════════════════════════════════════════
-  const [driftDebugVisible, setDriftDebugVisible] = useState(false)
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const urlOn = new URLSearchParams(window.location.search).get('driftDebug') === '1'
-    const lsOn = (() => { try { return window.localStorage.getItem('stracker_drift_debug') === '1' } catch { return false } })()
-    if (urlOn || lsOn) setDriftDebugVisible(true)
   }, [])
 
   // PROJECTION_CALIBRATION: normalize the raw backend coordinate.
@@ -2642,7 +1992,7 @@ export default function TrackerView() {
   // ── T3 (Gemini roast): TrackerSheet snap state + progress for backdrop blur ──
   const [sheetSnap, setSheetSnap] = useState<'closed' | 'half' | 'full'>('half')
   const [sheetProgress, setSheetProgress] = useState(0)
-  // V9: external snap control — when clipboard button opens VER MÁS, expand sheet to 'half' on mobile
+  // V9: external snap control — when 📋 opens VER MÁS, expand sheet to 'half' on mobile
   const [externalSheetSnap, setExternalSheetSnap] = useState<'closed' | 'half' | 'full' | null>(null)
 
   // V9: when VER MÁS toggles, control sheet snap on mobile (desktop is always open panel)
@@ -2662,68 +2012,29 @@ export default function TrackerView() {
     }
   }, [showVerMas, isMobile])
 
-  // RA30 DESKTOP_LAYOUT_DOCKING: pin offset is now 0 on BOTH mobile and desktop.
-  // The root layout is `flex flex-row-reverse` on desktop — the sheet is a
-  // 384px flex sibling on the LEFT, the map area is `flex-1` on the RIGHT.
-  // The map's visible area is naturally clear of the sheet, so the pin at the
-  // map area's center is NEVER covered. No camera-offset hack needed.
-  // (Legacy: was `isMobile ? 0 : 192` to shift the pin right of the fixed overlay.)
-  const PIN_OFFSET_X = 0
-
-  // RA30 MOBILE_GHOST_TRAIL_RECOVERY: vertical pin offset on mobile so the pin
-  // (and the GhostTrail around it) sits in the VISIBLE area above the bottom
-  // sheet, not hidden underneath. The sheet snaps are: closed=38px, half=260px,
-  // full=82dvh. We push the pin UP by half the sheet height so it's centered in
-  // the visible region. At 'full' snap the user explicitly wants the sheet
-  // content, so no offset. Desktop: 0 (no bottom sheet, flex layout clears the
-  // left panel automatically). This complements the GhostTrail render gate
-  // (which is already decoupled from live signal — it renders purely on
-  // historical data availability).
-  // V6.5 DASHBOARD_UNIFICATION_9_16: the layout is now ALWAYS bottom-sheet
-  // (9:16 column on all viewports), so PIN_OFFSET_Y applies on BOTH desktop
-  // and mobile. The pin is pushed UP above the bottom sheet so it sits in
-  // the visible area. At 'full' snap the user explicitly wants the sheet
-  // content, so no offset.
-  // V6.6 MAP_LIBERATION: TrackerSheet is now a fixed overlay (bottom-left
-  // widget on desktop, full-width bottom sheet on mobile). On DESKTOP the
-  // widget sits in the bottom-LEFT corner — the map's visible CENTER is
-  // always clear, so no vertical pin offset is needed. On MOBILE the
-  // bottom sheet spans full width and covers the bottom ~260px, so the pin
-  // is pushed UP into the visible area (same as V6.5).
-  const PIN_OFFSET_Y = isMobile
-    ? (sheetSnap === 'half' ? 130 : sheetSnap === 'closed' ? 19 : 0)
-    : 0
+  // T3: pin offset on desktop — shift pin right so left floating panel doesn't crowd it.
+  // Panel is 380px wide + 16px margin = 396px. Half = 198px offset.
+  const PIN_OFFSET_X = isMobile ? 0 : 192
 
   // V9 COMPACT HEIGHT-AWARE: compute safe dropdown height using spec budgets.
   // Height budget (collapsed panel): desktop 180px / mobile 170px / tiny 140px.
-  // Pin safety: panel NEVER covers viewport center (pin at vh/2) — MOBILE ONLY.
+  // Pin safety: panel NEVER covers viewport center (pin at vh/2).
   // When VER MÁS expands, dropdown grows within (maxPanelHeight - baseHeight).
   // On tiny viewports, VER MÁS is hidden and cookies force-collapsed.
-  //
-  // V6.4 DESKTOP_FIX: on desktop the sheet is a LEFT flex-dock (not a bottom
-  // floating panel), so the pin-safety constraint does NOT apply — the sheet
-  // has full viewport height to work with. Bumped the desktop viewport cap
-  // from vh*0.25 to vh*0.65 so the VER MÁS accordion sections (GPS, Sesión,
-  // Sistema, Eventos) are fully visible without cramped scrolling. Per
-  // directive: "nada de 'hidden' o 'overflow' bloqueando la información".
   useEffect(() => {
     const computeSafeHeight = () => {
       const vh = window.innerHeight
       const vw = window.innerWidth
-      const mobile = vw < 768 // V6.6: restored desktop/mobile split — desktop is now a floating widget overlay (not a 9:16 column)
+      const mobile = vw < 768
       const short = vw < 360 || vh < 600
-      // V9 spec height budgets (collapsed panel max) — mobile only.
-      // V6.4: desktop budget is effectively unbounded (the sheet is full-height).
-      const panelBudget = short ? 140 : (mobile ? 170 : vh * 0.9)
-      // Pin safety: panel must not extend above vh/2 - safety_margin — MOBILE ONLY.
+      // V9 spec height budgets (collapsed panel max)
+      const panelBudget = short ? 140 : (mobile ? 170 : 180)
+      // Pin safety: panel must not extend above vh/2 - safety_margin
       const bottomOffset = short ? 60 : (mobile ? 80 : 40)
-      const maxPanelHeight = mobile
-        ? Math.min(panelBudget, Math.max(80, vh / 2 - bottomOffset - 10))
-        : vh * 0.9 // V6.4: desktop — 90% of viewport (leave room for padding)
+      const maxPanelHeight = Math.min(panelBudget, Math.max(80, vh / 2 - bottomOffset - 10))
       // V9 base height — Estado(30) + Botonera(40/44) + Cookies(34) + VER MÁS(32) + paddings
-      // V6.4: bumped desktop baseHeight ~146 → ~260 to account for the new
-      // larger MasterControlPanel grid (2x3 cells × ~64px + footer).
-      let baseHeight = short ? 120 : (mobile ? 150 : 260)
+      // tiny: Estado(30) + Botonera(44) + Cookies(34) + no VER MÁS = ~108 + paddings ≈ 120
+      let baseHeight = short ? 120 : (mobile ? 150 : 146)
       // V9: measure actual base height at runtime (sum non-dropdown children)
       if (miniblockRef.current) {
         try {
@@ -2740,10 +2051,8 @@ export default function TrackerView() {
         } catch {}
       }
       const maxDrawerH = maxPanelHeight - baseHeight
-      // VER MÁS dropdown can grow up to maxDrawerH, but also cap by viewport fraction.
-      // V6.4: desktop cap bumped vh*0.25 → vh*0.65 (was too restrictive — the
-      // accordion sections were cramped and clipped).
-      const clamped = Math.max(40, Math.min(maxDrawerH, short ? vh * 0.10 : (mobile ? vh * 0.15 : vh * 0.65)))
+      // VER MÁS dropdown can grow up to maxDrawerH, but also cap by viewport fraction
+      const clamped = Math.max(40, Math.min(maxDrawerH, short ? vh * 0.10 : (mobile ? vh * 0.15 : vh * 0.25)))
       setDropdownMaxH(`${Math.round(clamped)}px`)
     }
     // Compute immediately + after a short delay (let DOM settle after viewport change)
@@ -2861,18 +2170,10 @@ export default function TrackerView() {
           .leaflet-marker-pane { z-index: 9999 !important; }
           .leaflet-overlay-pane { z-index: 400 !important; }
           .leaflet-tile-pane { z-index: 100 !important; }
-          /* V6.6 ZOOM_GLITCH_FIX — REMOVED the blur+brightness filter entirely.
-             The previous 'filter: blur(...) brightness(...)' on .leaflet-tile-pane
-             was destabilizing Leaflet's tile renderer during zoom transitions:
-             the browser had to re-rasterize filtered tiles on every zoom frame,
-             causing visible glitching / shimmering / smearing of map tiles.
-             Native Leaflet zoom is now 100% filter-free → tiles render in their
-             raw form from CartoDB dark_all (deep blacks, high-contrast grays).
-             The sheet-progress blur sync (T5 magic #1) is sacrificed in favor of
-             zoom stability — the trade-off is worth it: a stable map beats a
-             blurry-behind-sheet aesthetic that breaks on every wheel event. */
+          /* T5 magic #1: tile-pane blur synced with sheet progress (pin stays crisp) */
           .leaflet-tile-pane {
-            filter: none;
+            filter: blur(var(--map-tile-blur, 0px)) brightness(var(--map-tile-brightness, 1));
+            transition: filter 300ms ease;
           }
           /* B3: Horizontal scroll metrics bar — hide scrollbar */
           .metrics-scroll::-webkit-scrollbar { display: none; }
@@ -3059,86 +2360,6 @@ export default function TrackerView() {
   // estado_nuevo). The prevAlertRef holds the baseline; evaluateAlerts
   // applies the 30-min cooldown per alert type internally.
   const prevAlertRef = useRef<AlertState | null>(null)
-
-  // V6.8 DYNAMIC_DEVICE_INFERENCE — record a telemetry sample every time a
-  // fresh snapshot arrives. The sample (battery %, network type, GPS accuracy,
-  // timestamp) is persisted to localStorage('stracker_device_history'). The
-  // rolling window (max 60 samples / 30 min) feeds the inference engine that
-  // profiles the device fingerprint (Samsung A16 vs TCL 408) based on battery
-  // decay rate, GPS polling cadence, and network-type volatility.
-  const [inferredDevice, setInferredDevice] = useState<{ label: string; confidence: number; anomaly: boolean } | null>(null)
-  useEffect(() => {
-    if (!snapshot?.state) return
-    const st = snapshot.state as any
-    const batteryPct = st?.device?.battery ?? null
-    const networkType = st?.network?.type ?? st?.network?.connection_type ?? null
-    const gpsAccuracy = st?.gps?.accuracy ?? st?.location?.accuracy ?? null
-    if (batteryPct == null && networkType == null && gpsAccuracy == null) return
-    pushTelemetrySample({
-      ts: Date.now(),
-      batteryPct: typeof batteryPct === 'number' ? batteryPct : null,
-      networkType: networkType ? String(networkType).toUpperCase() : null,
-      gpsAccuracy: typeof gpsAccuracy === 'number' ? gpsAccuracy : null,
-    })
-    // Read the freshly-updated history and recompute the inference.
-    try {
-      const raw = window.localStorage.getItem(DEVICE_HISTORY_KEY)
-      const history: TelemetrySample[] = raw ? JSON.parse(raw) : []
-      const inferred = inferDeviceFromTelemetry(history)
-      setInferredDevice(inferred)
-      if (inferred && inferred.anomaly) {
-        console.warn(`[V6.8_DEVICE_INFERENCE] anomaly detected — label=${inferred.label} confidence=${inferred.confidence.toFixed(2)}`)
-      } else if (inferred) {
-        console.log(`[V6.8_DEVICE_INFERENCE] inferred=${inferred.label} confidence=${inferred.confidence.toFixed(2)} samples=${history.length}`)
-      }
-    } catch { /* localStorage unavailable */ }
-  }, [snapshot])
-
-  // V6.8 JITTER_AWARENESS_UI — GPS Jitter detection.
-  // Tracks the last 6 coordinate samples (~18s @ 3s poll). When the maximum
-  // pairwise distance between any two samples is >0m (the coordinates ARE
-  // fluctuating) AND <10m (the fluctuation is below the movement threshold),
-  // we declare GPS JITTER detected. This confirms the device is ACTIVE
-  // (screen on, GPS polling) but STATIONARY (no real translation) — the
-  // speed stays 0.0 km/h strict per the API, but a secondary activity pulse
-  // appears in the panel so the operator knows the target is "in-place
-  // active" rather than "offline / frozen".
-  const [jitterDetected, setJitterDetected] = useState(false)
-  const jitterHistoryRef = useRef<Array<{ lat: number; lng: number; ts: number }>>([])
-  useEffect(() => {
-    const lat = pyState?.location?.lat
-    const lng = pyState?.location?.lng
-    if (lat == null || lng == null || !isFinite(lat) || !isFinite(lng)) return
-    const now = Date.now()
-    const hist = jitterHistoryRef.current
-    // Push the new sample
-    hist.push({ lat, lng, ts: now })
-    // Keep only the last 18s of samples (matches the 6-sample window @ 3s poll)
-    while (hist.length > 0 && now - hist[0].ts > 18_000) hist.shift()
-    // Need ≥3 samples to compute a meaningful max pairwise distance
-    if (hist.length < 3) {
-      setJitterDetected(false)
-      return
-    }
-    // Compute max pairwise haversine distance in meters
-    let maxDistM = 0
-    for (let i = 0; i < hist.length; i++) {
-      for (let j = i + 1; j < hist.length; j++) {
-        const d = haversineM(hist[i].lat, hist[i].lng, hist[j].lat, hist[j].lng)
-        if (d > maxDistM) maxDistM = d
-      }
-    }
-    // JITTER = fluctuation present (>0.5m, filters pure-identical samples)
-    //          AND below the 10m movement threshold.
-    // The 0.5m floor avoids false positives from floating-point rounding
-    // when the device is truly frozen at one coordinate.
-    const isJitter = maxDistM > 0.5 && maxDistM < 10
-    setJitterDetected(isJitter)
-    if (isJitter) {
-      console.log(`[V6.8_JITTER] GPS jitter detected — max pairwise dist ${maxDistM.toFixed(2)}m across ${hist.length} samples (in-place activity, speed stays 0.0 km/h)`)
-    }
-  }, [pyState?.location?.lat, pyState?.location?.lng])
-
   useEffect(() => {
     if (!snapshot || !pyState) return
     // Compute current alert state from the same store the map uses.
@@ -3171,68 +2392,51 @@ export default function TrackerView() {
 
   useEffect(() => {
     const poll = async () => {
-      // LOGIC_GHOSTTRAIL_02: explicit 24h time window (1440 min) injected as
-      // start/end query params. Backend enforces the same 24h cutoff; these
-      // params make the temporal contract declarative and future-proof.
-      // INFRA_01 (stracker_v5.3_integration): fetchWithAuth injects the
-      // Bearer token (localStorage-backed) and validates the session before
-      // each call — refresh loop. Survives F5 without re-authentication.
-      // V6.7 SPOOFER_RESILIENCE: exponential backoff retry. On unstable
-      // mobile networks (Red Móvil) a single fetch may fail with
-      // ECONNREFUSED / timeout / 502 / 404-transient. Retry up to 3 attempts
-      // (800ms, 1600ms backoff) before declaring "sin datos" — this keeps
-      // the GhostTrail + live pin alive through transient network drops so
-      // the spoofing integrity analysis is never starved of data. The 24h
-      // lookback is requested on EVERY attempt (the mount-time first poll
-      // fires immediately because wsConnected starts false).
-      const endTs = Date.now()
-      const startTs = endTs - 24 * 60 * 60 * 1000 // NOW() - 24h
-      const url = `/points?start=${startTs}&end=${endTs}`
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const resp = await fetchWithAuth(url)
-          if (resp.ok) {
-            const data = await resp.json()
-            // V7: ghostrail_pts comes from CSV (canonical). Prefer top-level (already transformed),
-            // fallback to state.ghostrail.points_24h (raw from Python).
-            // HOTFIX stracker_map_data_safety: Forzar Parsing — sanitize the
-            // raw response so a non-array (single object, null, wrapped
-            // envelope) is coerced to a clean array before reaching the map.
-            const rawGhostrailPts = data.ghostrail_pts ?? data.state?.ghostrail?.points_24h ?? []
-            const ghostrailPtsData = sanitizePointsArray(rawGhostrailPts, 'http.poll.ghostrail_pts')
-            const pointsData = sanitizePointsArray(data.points, 'http.poll.points')
+      try {
+        // LOGIC_GHOSTTRAIL_02: explicit 24h time window (1440 min) injected as
+        // start/end query params. Backend enforces the same 24h cutoff; these
+        // params make the temporal contract declarative and future-proof.
+        // INFRA_01 (stracker_v5.3_integration): fetchWithAuth injects the
+        // Bearer token (localStorage-backed) and validates the session before
+        // each call — refresh loop. Survives F5 without re-authentication.
+        const endTs = Date.now()
+        const startTs = endTs - 24 * 60 * 60 * 1000 // NOW() - 24h
+        const resp = await fetchWithAuth(`/points?start=${startTs}&end=${endTs}`)
+        if (resp.ok) {
+          const data = await resp.json()
+          // V7: ghostrail_pts comes from CSV (canonical). Prefer top-level (already transformed),
+          // fallback to state.ghostrail.points_24h (raw from Python).
+          // HOTFIX stracker_map_data_safety: Forzar Parsing — sanitize the
+          // raw response so a non-array (single object, null, wrapped
+          // envelope) is coerced to a clean array before reaching the map.
+          const rawGhostrailPts = data.ghostrail_pts ?? data.state?.ghostrail?.points_24h ?? []
+          const ghostrailPtsData = sanitizePointsArray(rawGhostrailPts, 'http.poll.ghostrail_pts')
+          const pointsData = sanitizePointsArray(data.points, 'http.poll.points')
 
-            const transformed: SnapshotData = {
-              points: pointsData,
-              state: data.state || null,
-              ghostrail_pts: ghostrailPtsData,
-              _meta: {
-                tick: 0,
-                event_seq: data._meta?.event_seq || 0,
-                snapshot_version: data._meta?.snapshot_version || 1,
-                architecture: data.state?.meta?.engine || 'PYTHON_TRACKER',
-              },
-            }
-            setSnapshot(transformed)
-            // SYS3: mark fresh data — this keeps polling KILLED until stale
-            lastDataTsRef.current = Date.now()
-            setWsConnected(true)
-            // AT_2 (stracker_v8_hyper_premium): heartbeat — bump on every fresh
-            // payload arrival so the DynamicIsland LED replays its heartbeat ring.
-            setHeartbeatTs(Date.now())
-            if (transformed._meta.event_seq) setKernelSeq(transformed._meta.event_seq)
-            if (transformed._meta.snapshot_version) setSnapshotVersion(transformed._meta.snapshot_version)
-            return
+          const transformed: SnapshotData = {
+            points: pointsData,
+            state: data.state || null,
+            ghostrail_pts: ghostrailPtsData,
+            _meta: {
+              tick: 0,
+              event_seq: data._meta?.event_seq || 0,
+              snapshot_version: data._meta?.snapshot_version || 1,
+              architecture: data.state?.meta?.engine || 'PYTHON_TRACKER',
+            },
           }
-          // Non-2xx HTTP (404/500/502) — treat as transient, retry with backoff
-        } catch { /* network error (ECONNREFUSED/timeout) — retry with backoff */ }
-        // Exponential backoff between attempts: 800ms, 1600ms. Skip after the
-        // last attempt so we don't delay the next polling cycle.
-        if (attempt < 2) {
-          await new Promise(r => setTimeout(r, 800 * Math.pow(2, attempt)))
+          setSnapshot(transformed)
+          // SYS3: mark fresh data — this keeps polling KILLED until stale
+          lastDataTsRef.current = Date.now()
+          setWsConnected(true)
+          // AT_2 (stracker_v8_hyper_premium): heartbeat — bump on every fresh
+          // payload arrival so the DynamicIsland LED replays its heartbeat ring.
+          setHeartbeatTs(Date.now())
+          if (transformed._meta.event_seq) setKernelSeq(transformed._meta.event_seq)
+          if (transformed._meta.snapshot_version) setSnapshotVersion(transformed._meta.snapshot_version)
+          return
         }
-      }
-      // All 3 retries exhausted → declare disconnected, re-arm polling
+      } catch { /* /points not available */ }
+
       setWsConnected(false)
     }
 
@@ -3262,27 +2466,21 @@ export default function TrackerView() {
   const panToWithOffset = useCallback((lat: number, lng: number, opts?: { animate?: boolean; duration?: number }) => {
     const map = mapInstanceRef.current
     if (!map) return
-    // RA30: both offsets 0 → simple panTo (no container-point math needed).
-    if (PIN_OFFSET_X === 0 && PIN_OFFSET_Y === 0) {
+    if (PIN_OFFSET_X === 0) {
       map.panTo([lat, lng], opts || { animate: true, duration: 0.8 })
       return
     }
-    // Compute the lat/lng that, when centered, places the pin at
-    // (targetPoint.x - PIN_OFFSET_X, targetPoint.y + PIN_OFFSET_Y) in container
-    // coords. X offset shifts pin right (desktop legacy, now 0). Y offset
-    // pushes pin UP on mobile so it sits in the visible area above the sheet
-    // (RA30 MOBILE_GHOST_TRAIL_RECOVERY — keeps pin + GhostTrail visible).
+    // Desktop: compute the lat/lng that sits PIN_OFFSET_X pixels LEFT of the
+    // target pin. Centering on THAT lat/lng makes the pin appear PIN_OFFSET_X
+    // pixels RIGHT of viewport center (clear of the left floating panel).
     try {
       const targetPoint = map.latLngToContainerPoint([lat, lng] as any)
-      const offsetLatLng = map.containerPointToLatLng([
-        targetPoint.x - PIN_OFFSET_X,
-        targetPoint.y + PIN_OFFSET_Y,
-      ] as any)
+      const offsetLatLng = map.containerPointToLatLng([targetPoint.x - PIN_OFFSET_X, targetPoint.y] as any)
       map.panTo(offsetLatLng, opts || { animate: true, duration: 0.8 })
     } catch {
       map.panTo([lat, lng], opts || { animate: true, duration: 0.8 })
     }
-  }, [PIN_OFFSET_X, PIN_OFFSET_Y])
+  }, [PIN_OFFSET_X])
 
   // ── PIN CENTER LOCK ── Pan to new position WITHOUT changing zoom
   // Uses panToWithOffset() to center on pin while preserving zoom + desktop offset
@@ -3304,44 +2502,6 @@ export default function TrackerView() {
     panToWithOffset(lat, lng, { animate: true, duration: 0.8 })
     writeUrlParams(lat, lng, currentZoom)
   }, [snapshot, panToWithOffset])
-
-  // RA30 MOBILE_GHOST_TRAIL_RECOVERY: re-center the pin when the sheet snap
-  // changes on mobile so the Y offset takes effect. Without this, snapping the
-  // sheet (e.g. half → closed) leaves the pin in its old position (hidden under
-  // the sheet or floating too high). The PIN_CENTER_LOCK effect above skips
-  // re-centering when the pin position hasn't changed, so we need this separate
-  // effect keyed on PIN_OFFSET_Y. Uses the SAME fallback chain as centerCamera
-  // (live → cached last-known → HOME_GEOFENCE) so it works even without a live
-  // signal (RA28 resilience). Desktop: PIN_OFFSET_Y is always 0, so this is a no-op.
-  useEffect(() => {
-    if (PIN_OFFSET_Y === 0) return
-    if (!mapInstanceRef.current) return
-    if (!followModeRef.current) return
-    const state = snapshot?.state
-    const liveLat = state?.ui?.map?.lat ?? state?.location?.lat ?? null
-    const liveLng = state?.ui?.map?.lng ?? state?.location?.lng ?? null
-    const cachedPos = typeof window !== 'undefined' ? loadLastPosition() : null
-    const lat = (liveLat != null && isFinite(liveLat)) ? liveLat
-              : (cachedPos && cachedPos.lat != null && isFinite(cachedPos.lat)) ? cachedPos.lat
-              : null
-    const lng = (liveLng != null && isFinite(liveLng)) ? liveLng
-              : (cachedPos && cachedPos.lng != null && isFinite(cachedPos.lng)) ? cachedPos.lng
-              : null
-    if (lat == null || lng == null) return
-    panToWithOffset(lat, lng, { animate: true, duration: 0.5 })
-    // NOTE: mapInstanceReady is in the dep array so this fires when the map
-    // first becomes available (initial load). Without it, the effect would
-    // return early on mount (mapInstanceRef.current is null) and never re-fire.
-  }, [PIN_OFFSET_Y, snapshot, panToWithOffset, mapInstanceReady])
-
-  // ── V6.7 SATELLITE_PERSISTENCE ── Sync map layer style to localStorage.
-  // Fires on every isSatellite toggle so the operator's basemap choice
-  // (dark CartoDB vs ArcGIS satellite) survives F5 / session restart. Key:
-  // 'tracker_map_style' ('satellite' | 'dark'). Per directive
-  // "localStorage.setItem('tracker_map_style', currentStyle)".
-  useEffect(() => {
-    try { localStorage.setItem('tracker_map_style', isSatellite ? 'satellite' : 'dark') } catch { /* ignore */ }
-  }, [isSatellite])
 
   // ── ZOOM PERSISTENCE ── Save zoom to localStorage on every zoom change
   // CRITICAL: Depends on mapInstanceReady, not just mapReady
@@ -3434,8 +2594,8 @@ export default function TrackerView() {
     if (latest.type === 'ARRIVAL_PROGRESS' || latest.type === 'ZONE_CHANGE') {
       const p = latest.payload
       const msg = latest.type === 'ARRIVAL_PROGRESS'
-        ? (p.to_stage === 'ARRIVED' ? 'LLEGÓ A CASA' : `LLEGANDO ${p.distance_m}m`)
-        : `${p.from_label} → ${p.to_label}`
+        ? (p.to_stage === 'ARRIVED' ? '🏠 LLEGÓ A CASA' : `📍 LLEGANDO ${p.distance_m}m`)
+        : `🗺️ ${p.from_label} → ${p.to_label}`
       requestAnimationFrame(() => showToast(msg))
       // T5 magic #3: Web Haptics — vibrate on zone change / arrival (mobile only)
       if (typeof navigator !== 'undefined' && navigator.vibrate) {
@@ -3445,7 +2605,7 @@ export default function TrackerView() {
     // T5 #3: stronger haptic on spoof red alert — also push a CRITICAL island alert
     if (latest.type === 'SPOOF_DETECTED') {
       const p = latest.payload || {}
-      requestAnimationFrame(() => showToast(`ALERTA: ${p.signal || 'Salto de señal GPS detectado'} (Spoofing)`))
+      requestAnimationFrame(() => showToast(`⚠️ ALERTA: ${p.signal || 'Salto de señal GPS detectado'} (Spoofing)`))
       if (typeof navigator !== 'undefined' && navigator.vibrate) {
         navigator.vibrate([30, 50, 30, 50, 30, 50, 60])
       }
@@ -3477,32 +2637,12 @@ export default function TrackerView() {
   }, [snapshot, panToWithOffset])
 
   // Center camera — uses panToWithOffset to preserve zoom + apply desktop pin offset
-  // RA28 (UI resilience & control restoration): DECOUPLED from live-signal
-  // availability. Previously the "Centrar" button was a no-op whenever the
-  // backend reported no_location (lat/lng null) — the early-return at the
-  // null-coord guard made the whole control cluster feel dead. Now the
-  // fallback chain is:
-  //   1. Live coords (pyState.location or ui.map) — preferred when available
-  //   2. Last known cached position (localStorage stracker_last_pos) — most
-  //      recent real signal, even if the live poll is stale
-  //   3. HOME_GEOFENCE (POI/Casa) — static reference so the map ALWAYS has
-  //      somewhere to fly to. Better to land on "Casa" than to leave the
-  //      operator staring at a frozen viewport.
-  // The "Centrar" button is therefore ALWAYS interactive. RA27 integrity is
-  // preserved: this only moves the CAMERA, it does NOT fabricate a live PIN.
   const centerCamera = useCallback(() => {
-    if (!mapInstanceRef.current) return
-    const state = snapshot?.state
-    const liveLat = state?.ui?.map?.lat ?? state?.location?.lat ?? null
-    const liveLng = state?.ui?.map?.lng ?? state?.location?.lng ?? null
-    const cachedPos = typeof window !== 'undefined' ? loadLastPosition() : null
-    // Fallback chain: live → cached last-known → HOME_GEOFENCE (POI/Casa)
-    const lat = (liveLat != null && isFinite(liveLat)) ? liveLat
-              : (cachedPos && cachedPos.lat != null && isFinite(cachedPos.lat)) ? cachedPos.lat
-              : HOME_GEOFENCE.lat
-    const lng = (liveLng != null && isFinite(liveLng)) ? liveLng
-              : (cachedPos && cachedPos.lng != null && isFinite(cachedPos.lng)) ? cachedPos.lng
-              : HOME_GEOFENCE.lng
+    if (!mapInstanceRef.current || !snapshot?.state) return
+    const state = snapshot.state
+    const lat = state.ui?.map?.lat ?? state.location?.lat
+    const lng = state.ui?.map?.lng ?? state.location?.lng
+    if (lat == null || lng == null || !isFinite(lat) || !isFinite(lng)) return
     // panToWithOffset preserves zoom + shifts pin right on desktop (clear of left panel)
     panToWithOffset(lat, lng, { animate: true })
     setFollowMode(true)
@@ -3518,12 +2658,12 @@ export default function TrackerView() {
       const resp = await fetch('/api/deploy') // dev-only endpoint, kept as-is
       if (resp.ok) {
         setLastCookieRefresh(new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }))
-        showToast('Cookies refresh signalado')
+        showToast('🍪 Cookies refresh signalado')
       } else {
-        showToast('Error refreshing cookies')
+        showToast('⚠️ Error refreshing cookies')
       }
     } catch {
-      showToast('Error de conexión')
+      showToast('⚠️ Error de conexión')
     }
     setTimeout(() => setCookiesRefreshing(false), 2000)
   }, [showToast])
@@ -3547,57 +2687,7 @@ export default function TrackerView() {
     }
   }, [pyState?.location?.lat, pyState?.location?.lng])
 
-  // RA30 INFORMATIVE_DASHBOARD: Última conexión — timestamp of the most recent
-  // historical point in ghostrailPts. When there's no live signal, this tells
-  // the operator when the target was last heard from (e.g. "hace 23 min").
-  // Falls back to lastSavedPos.t (localStorage cached position) if ghostrailPts
-  // is empty. null when neither is available.
-  // V6.10: moved BEFORE dataAgeMin/screen so it's available in the TDZ-safe
-  // order (dataAgeMin references ultimaConexionTs, screen references
-  // ultimaConexionLabel).
-  const ultimaConexionTs = useMemo(() => {
-    if (ghostrailPts.length > 0) {
-      const last = ghostrailPts[ghostrailPts.length - 1]
-      const ts = new Date(last.t).getTime()
-      if (isFinite(ts)) return ts
-    }
-    return lastSavedPos?.t ?? null
-  }, [ghostrailPts, lastSavedPos])
-  const ultimaConexionLabel = ultimaConexionTs != null
-    ? formatStaleAge(ultimaConexionTs)
-    : ''
-
-  // V6.10 STALE_DATA_EXPOSURE — audit the raw Google payload timestamp.
-  // The backend's `last_update` field carries the ISO timestamp of the most
-  // recent point received from Google's Location Sharing RPC. We compute the
-  // age in minutes and use it to switch the UI from "Tiempo Real" to
-  // "Señal Latente / Caché" when the data is >10 min old, and to force the
-  // Pantalla ON indicator OFF when >15 min old (radio silence = no claim
-  // of activity).
-  const dataAgeMin = useMemo(() => {
-    const rawTs = snapshot?.last_update ?? null
-    if (rawTs) {
-      const ms = new Date(rawTs).getTime()
-      if (isFinite(ms)) return Math.max(0, (Date.now() - ms) / 60000)
-    }
-    if (ultimaConexionTs != null) {
-      return Math.max(0, (Date.now() - ultimaConexionTs) / 60000)
-    }
-    return null
-  }, [snapshot?.last_update, ultimaConexionTs])
-
-  const isStaleSignal = dataAgeMin != null && dataAgeMin > 10
-  const isRadioSilence = dataAgeMin != null && dataAgeMin > 15
-
-  const screenRaw = deriveScreenState(pyState)
-  // V6.10 STALE_DATA_EXPOSURE — force Pantalla OFF when data is >15 min old.
-  // Radio silence means the device hasn't emitted a real signal in 15+ min.
-  // We must NOT claim screen activity based on inferred signals (movement,
-  // network, battery) when the source is silent — those inferences were
-  // derived from the stale payload itself and cannot be trusted.
-  const screen = isRadioSilence
-    ? { ...screenRaw, isOn: false, label: `OFF · ${ultimaConexionLabel || 'sin señal'}`, shortLabel: 'OFF', confidence: 0, source: 'radio_silence' }
-    : screenRaw
+  const screen = deriveScreenState(pyState)
   const network = deriveNetwork(pyState)
   const placeBadge = derivePlaceBadge(pyState)
   const locationLabel = pyState?.location?.label_primary || ''
@@ -3641,16 +2731,10 @@ export default function TrackerView() {
   // FIX_1 (stracker_hotfix_ui_v8.2): Coordenadas fallback Santa Fe para
   // depuración visual. Cuando el backend reporta "Sin ubicacion" (lat/lng
   // null), el LiveMarker no renderizaba y el usuario veía un mapa vacío.
-  // RA27 (location integrity): ELIMINATED the FALLBACK_LAT/FALLBACK_LNG
-  // ghost-pin behavior. When the backend returns no_location (lat/lng null),
-  // the frontend MUST NOT fabricate a PIN at HOME_GEOFENCE coords. The old
-  // code (below, commented out) drew a fake pin at -31.64693,-60.71598 "for
-  // debugging" — this was the ghost the operator saw. Now: null coords →
-  // no PIN → the LiveMarker render gate (line ~3169: mapData?.lat != null)
-  // hides the marker. The map still centers on the last known position
-  // (loadLastPosition) for context, but NO fake target PIN is drawn.
-  // const FALLBACK_LAT = HOME_GEOFENCE.lat
-  // const FALLBACK_LNG = HOME_GEOFENCE.lng
+  // Ahora usamos el HOME_GEOFENCE como fallback para que el pin SIEMPRE
+  // aparezca (criterio_1 de la matriz de verificación v8.2).
+  const FALLBACK_LAT = HOME_GEOFENCE.lat // -31.64693 (Santa Fe, AR)
+  const FALLBACK_LNG = HOME_GEOFENCE.lng // -60.71598
 
   const mapData = ui?.map || (pyState?.location && pyState.location.lat != null && pyState.location.lng != null ? {
     lat: pyState.location.lat,
@@ -3663,104 +2747,29 @@ export default function TrackerView() {
     is_home: pyState.location?.zone === 'HOME',
     auto_unlock_camera: true,
   } : {
-    // RA27: NO GHOST PIN. When backend has no_location, serve null coords.
-    // The LiveMarker render gate checks mapData?.lat != null → marker hidden.
-    // The map camera falls back to loadLastPosition() or HOME_GEOFENCE view
-    // center (for map orientation only — NOT a fake target pin).
-    lat: null as number | null,
-    lng: null as number | null,
-    lat_str: '---',
-    lng_str: '---',
+    // FIX_1: fallback estático — pin siempre visible para depuración
+    lat: FALLBACK_LAT,
+    lng: FALLBACK_LNG,
+    lat_str: String(FALLBACK_LAT.toFixed(5)),
+    lng_str: String(FALLBACK_LNG.toFixed(5)),
     show_speed: false,
     speed_label: '',
     mode: 'STILL',
-    is_home: false,
+    is_home: true,
     auto_unlock_camera: true,
   })
-
-  // RA28: StaleMarker data — computed AFTER mapData (TDZ-safe: mapData is
-  // already declared above). Only populated when there is NO live signal
-  // (mapData.lat is null per RA27) BUT we DO have a cached last-known
-  // position. The ageLabel is computed from the persisted timestamp `t`
-  // so the operator sees "Última señal hace 12 min" rather than a bare
-  // ghost pin. This is a UI affordance only — it does NOT fabricate live
-  // coordinates (RA27 integrity preserved).
-  const hasLiveSignal = mapData?.lat != null && mapData?.lng != null
-    && isFinite(mapData.lat) && isFinite(mapData.lng)
-  const staleMarkerData = (!hasLiveSignal && lastSavedPos
-    && lastSavedPos.lat != null && lastSavedPos.lng != null
-    && isFinite(lastSavedPos.lat) && isFinite(lastSavedPos.lng))
-    ? { lat: lastSavedPos.lat, lng: lastSavedPos.lng, ageLabel: formatStaleAge(lastSavedPos.t) }
-    : null
-
-  // RA30 INFORMATIVE_DASHBOARD: Km recorridos — frontend-calculated sum of
-  // haversine distances between consecutive ghostrailPts within the 24h window.
-  // Gives the operator an at-a-glance read of how much the target has moved.
-  // Memoized on ghostrailPts so it only recomputes when the trail changes.
-  const kmRecorridos = useMemo(() => {
-    if (ghostrailPts.length < 2) return 0
-    let totalM = 0
-    for (let i = 1; i < ghostrailPts.length; i++) {
-      const prev = ghostrailPts[i - 1]
-      const cur = ghostrailPts[i]
-      totalM += haversineM(prev.lat, prev.lng, cur.lat, cur.lng)
-    }
-    return totalM / 1000 // meters → km
-  }, [ghostrailPts])
-  // Compact label: "1.2 km" or "847 m" for sub-km distances.
-  const kmLabel = kmRecorridos >= 1
-    ? `${kmRecorridos.toFixed(1)} km`
-    : `${Math.round(kmRecorridos * 1000)} m`
-
-  // NOTE: ultimaConexionTs / ultimaConexionLabel / dataAgeMin / isStaleSignal /
-  // isRadioSilence are all computed earlier (before `screen`) so they're
-  // available in TDZ-safe order for the screen-state override.
-  // See the V6.10 STALE_DATA_EXPOSURE block above.
 
   const centerLat = mapLat
   const centerLng = mapLng
 
-  // GPS quality — V9: text labels ALTA/MEDIA/BAJA
+  // GPS quality — V9: text labels ALTA/MEDIA/BAJA (spec: 📡ALTA)
   const gpsAccuracy = pyState?.gps?.accuracy ?? pyState?.location?.accuracy ?? 0
   const gpsQuality = gpsAccuracy <= 20 ? 'ALTA' : gpsAccuracy <= 60 ? 'MEDIA' : 'BAJA'
   const gpsColor = 'rgba(255,255,255,.8)'
 
-  // Battery — M5: ultra-compact format (e.g. 15, 52, 100). No %, no spaces
+  // Battery — M5: ultra-compact format (🔋15, 🔋52, 🔋100). No ⚡, no %, no spaces
   const batteryPct = pyState?.device?.battery ?? null
   const batteryLabel = batteryPct !== null ? `${batteryPct}` : ''
-
-  // RA29 BACKEND_DATA_ENRICHMENT — Device fingerprint label extracted from
-  // Google's Location Sharing payload by the backend. Falls back to
-  // 'Desconocido' when Google's payload is opaque or the backend hasn't
-  // polled yet. Read from BOTH the snapshot top-level device_label and
-  // state.device.device_label / state.meta.device_label for resilience
-  // (the backend injects it into all three locations).
-  const deviceLabel = (pyState?.device as any)?.device_label
-    ?? (pyState?.meta as any)?.device_label
-    ?? (snapshot as any)?.device_label
-    ?? 'Desconocido'
-
-  // V6.4 UI_METRICS_DASHBOARD — clean the device label for display.
-  // Google obfuscated IDs (16+ char alphanumeric) become "Android · XXXX"
-  // so the operator sees a friendly hardware fingerprint. Clean model
-  // names (iPhone16,2, Pixel 8 Pro, SM-S918B) pass through unchanged.
-  // V6.8 DYNAMIC_DEVICE_INFERENCE — pass the telemetry-inferred device
-  // label so cleanDeviceLabel() can resolve unrecognized Google IDs based
-  // on the live fingerprint (battery decay / GPS cadence / network volatility).
-  const deviceLabelClean = useMemo(
-    () => cleanDeviceLabel(deviceLabel, inferredDevice),
-    [deviceLabel, inferredDevice]
-  )
-
-  // V6.4 UI_METRICS_DASHBOARD — compute the MODO cell using the directive's
-  // explicit speed thresholds (<5=A Pie, 5-25=Moto, 25-60=Colectivo, >60=Auto).
-  // Overrides the existing movement.displayMode which uses a different
-  // classification (WALK ≤ 7, BUS ≤ 40, CAR > 40). Sleep state still wins.
-  const modoInfo = useMemo(
-    () => computeModoInfo(movement.speedKmh, movement.inferredMode),
-    [movement.speedKmh, movement.inferredMode]
-  )
-  const ModoIcon = resolveMovementIcon(modoInfo.iconToken)
 
   // Ver más data
   const verMasGps = ui?.ver_mas?.gps ?? (pyState ? {
@@ -3920,10 +2929,10 @@ export default function TrackerView() {
         navigator.vibrate([20, 50, 20])
       }
       setForensicCopied(true)
-      showToast('Telemetría Forense copiada — pega en Gemini')
+      showToast('📋 Telemetría Forense copiada — pega en Gemini')
       setTimeout(() => setForensicCopied(false), 3000)
     } catch (e) {
-      showToast('Error generando telemetría')
+      showToast('⚠️ Error generando telemetría')
     }
   }
 
@@ -3939,9 +2948,9 @@ export default function TrackerView() {
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
-      showToast('Telemetría descargada')
+      showToast('⬇ Telemetría descargada')
     } catch {
-      showToast('Error descargando')
+      showToast('⚠️ Error descargando')
     }
   }
 
@@ -4097,19 +3106,6 @@ export default function TrackerView() {
 
   return (
     <div className="w-full h-[100dvh] relative overflow-hidden" style={{ background: '#000000' }}>
-      {/* V6.6 MAP_LIBERATION_9_16_REMOVE — the 9:16 column wrapper has been
-          REMOVED. The map now occupies 100% of the viewport (w-full h-full,
-          responsive) with NO black side margins on desktop. TrackerSheet is
-          rendered as a `position: fixed` overlay (see TrackerSheet.tsx):
-            - Mobile (<768px): full-width bottom sheet, same as before.
-            - Desktop (>=768px): floating bottom-LEFT widget (~400px wide,
-              rounded all corners) — Apple Maps style. The map's CENTER is
-              always clear so the pin is never occluded.
-          The map area below is `absolute inset-0` so it fills the full
-          viewport. All overlays inside use `absolute` positioning measured
-          relative to THIS container. */}
-      {/* ══ MAP AREA (absolute inset-0, holds map + all overlays) ══ */}
-      <div className="absolute inset-0 overflow-hidden">
       {/* ══ FULL SCREEN MAP ══ */}
       {/* HOTFIX stracker_map_data_safety: ErrorBoundary wraps the map subtree.
           If any child (LiveMarker, GhostTrail, LoiteringHeatmap, DriftDebugMarker)
@@ -4122,34 +3118,22 @@ export default function TrackerView() {
           <div
             className="absolute inset-0 z-0"
           style={{
-            // V6.6 ZOOM_GLITCH_FIX: --map-tile-blur and --map-tile-brightness
-            // CSS vars have been REMOVED. The .leaflet-tile-pane filter is now
-            // `none` (see the inline <style> block above) so Leaflet tiles
-            // render natively without any CSS filter destabilization during
-            // zoom transitions. The sheet-progress blur sync is gone — a
-            // stable zoom experience is worth more than the aesthetic blur.
+            // T5 magic #1 (M1): map tile blur synced with sheet progress.
+            // Per stracker_v7_ui_evolution: backdrop-blur(sheetProgress*6px) brightness(1-0.3).
+            // CSS var applied ONLY to .leaflet-tile-pane (NOT marker pane) → pin stays crisp.
+            // Desktop: sheetProgress=0 → no blur. Mobile full sheet → 6px blur + 30% darken.
+            ['--map-tile-blur' as any]: `${(sheetProgress * 6).toFixed(1)}px`,
+            ['--map-tile-brightness' as any]: (1 - sheetProgress * 0.3).toFixed(2),
             // MC_8_01: Pseudo-3D Drive Mode — driveTilt [0..1] tilts the tile +
             // overlay panes into a Tesla-style driving perspective (see globals.css).
             ['--drive-tilt' as any]: driveTilt.toFixed(2),
           }}
         >
-          {/* V6.7 GOOGLE_MAPS_SYNC: Leaflet's default CRS is EPSG:3857 (Web
-              Mercator) — the SAME projection Google Maps uses. No `crs` prop
-              is set, so coordinates (WGS84 lat/lng) render at the exact same
-              pixel position as Google Maps. worldCopyJump=true gives the
-              infinite-horizontal-wrap behavior Google Maps has (panning across
-              the antimeridian seamlessly re-centers). The map center uses the
-              live backend coordinate (ui.map.lat ?? pyState.location.lat) so
-              the viewport matches Google Maps pixel-for-pixel once live signal
-              is present. The "desfase" observed in the audit was caused by the
-              sandbox having no live data → center fell back to HOME_GEOFENCE
-              (a static default), not a projection mismatch. */}
           <MapContainer
             center={[centerLat, centerLng]}
             zoom={persistedZoom}
             zoomControl={false}
             attributionControl={false}
-            worldCopyJump
             style={{ width: '100%', height: '100%' }}
             ref={(ref: any) => { mapRef.current = ref }}
             whenReady={(mapObj: any) => {
@@ -4164,20 +3148,13 @@ export default function TrackerView() {
               }
             }}
           >
-            {/* V6.6 ZOOM_GLITCH_FIX — maxZoom capped to 20 (was 22). CartoDB
-                dark_all + dark_only_labels tiles only go up to z=20; requesting
-                z=21/22 produced 404s + blank tiles + zoom glitches.
-                maxNativeZoom=20 lets Leaflet upscale cleanly if the user
-                zooms past 20 (no broken tiles). ArcGIS World_Imagery supports
-                up to z=23 so its maxZoom stays at 22 with maxNativeZoom=19
-                (the level where ArcGIS stops serving 256px tiles crisply). */}
             {isSatellite ? (
               <>
-                <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" maxZoom={22} maxNativeZoom={19} />
-                <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png" maxZoom={20} maxNativeZoom={20} subdomains="abcd" />
+                <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" maxZoom={22} />
+                <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png" maxZoom={22} subdomains="abcd" />
               </>
             ) : (
-              <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" maxZoom={20} maxNativeZoom={20} subdomains="abcd" />
+              <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" maxZoom={22} subdomains="abcd" />
             )}
             {/* V6.0 stracker_fix_geospatial_drift: LiveMarker uses the
                 calibrated display position (WGS84-normalized + snap-to-road
@@ -4198,13 +3175,11 @@ export default function TrackerView() {
                     heading={headingState.heading}
                     headingLatch={headingState.latched}
                   />
-                  {/* DEBUG_OVERLAY_INJECTION: crosshair at the RAW backend
-                      coordinate. RA23: HIDDEN BY DEFAULT in production —
-                      toggle via ?driftDebug=1 URL param or localStorage
-                      'stracker_drift_debug=1'. Only rendered when drift > 1m
-                      AND the debug flag is on, so the map stays clean in
-                      production and audits still get the overlay on demand. */}
-                  {driftDebugVisible && normalizedPin && (
+                  {/* DEBUG_OVERLAY_INJECTION: red crosshair at the RAW backend
+                      coordinate. Only rendered when it differs from the
+                      rendered pin by > 1m, so the map isn't cluttered when
+                      drift is zero. */}
+                  {normalizedPin && (
                     <DriftDebugMarker
                       key={`drift-${normalizedPin.lat.toFixed(6)}-${normalizedPin.lng.toFixed(6)}`}
                       rawLat={normalizedPin.lat}
@@ -4218,27 +3193,13 @@ export default function TrackerView() {
                 </>
               )
             })()}
-            {/* RA28 — StaleMarker: last-known cached position when live signal
-                is absent. Renders ONLY when mapData.lat is null (RA27 keeps
-                LiveMarker hidden) AND we have a valid cached position. Visual
-                contract: 50% opacity, grayscale, no pulse, z-index 500 (below
-                LiveMarker's 10000) so a returning live signal occludes it.
-                Label "Última señal hace X min" tells the operator the age of
-                the cached reading — they understand it's a memory, not live. */}
-            {staleMarkerData && !scrubbedPoint && (
-              <StaleMarker
-                lat={staleMarkerData.lat}
-                lng={staleMarkerData.lng}
-                ageLabel={staleMarkerData.ageLabel}
-              />
-            )}
             {/* MAGIA1: When scrubbing, show the marker at the scrubbed point instead.
                 V5.7 NAV_02: heading is computed from the historical slice. */}
             {scrubbedPoint && (
               <LiveMarker
                 lat={scrubbedPoint.lat}
                 lng={scrubbedPoint.lng}
-                speedLabel="SCRUB"
+                speedLabel="⏮ SCRUB"
                 accuracy={gpsAccuracy}
                 solarDate={circadianNow}
                 heading={headingState.heading}
@@ -4252,18 +3213,8 @@ export default function TrackerView() {
             {/* LAYER_01 / FIX_LAYER_03 (stracker_core_ui): GhostTrail re-render
                 forzado via key. z-index: overlayPane=400 (above tilePane=200,
                 below markerPane=600). Polyline pointer-events disabled in CSS so
-                the overlay NEVER consumes click/touch events meant for the pin.
-                RA29 (GhostTrail 24h persistence): the trail is now ALWAYS rendered
-                when there are >=2 routed points within the 24h window — even when
-                liveLocation is null. The 24h cutoff is already enforced upstream
-                in the ghostrailPts useMemo (cutoff24h = now - 24h), so this gate
-                is purely "do we have historical data to show?". The map is never
-                'blind' when the CSV history has points, regardless of live signal.
-                ghostVisible (the user toggle for the GhostRail panel) still hides
-                the trail when explicitly turned off by the operator.
-                V6.8 GHOST_TRAIL_THRESHOLD: gate lowered from >= 2 to >= 1 so the
-                stationary CircleMarker renders for single-point histories. */}
-            {ghostVisible && routedTrailPts.length >= 1 && (
+                the overlay NEVER consumes click/touch events meant for the pin. */}
+            {ghostVisible && routedTrailPts.length >= 2 && (
               <GhostTrail key={`ghost-${routedTrailPts.length}`} routedPoints={routedTrailPts} />
             )}
           </MapContainer>
@@ -4279,23 +3230,20 @@ export default function TrackerView() {
 
       {/* ══ OVERLAYS ══ */}
       {overlays.spoof && (
-        <div className="absolute inset-0 z-[5] pointer-events-none" style={{
+        <div className="fixed inset-0 z-[5] pointer-events-none" style={{
           boxShadow: 'inset 0 0 160px 40px rgba(255,255,255,.06)',
           animation: 'spoofPulse 2s ease-in-out infinite',
         }} />
       )}
       {overlays.signal && (
-        <div className="absolute inset-0 z-[5] pointer-events-none" style={{
+        <div className="fixed inset-0 z-[5] pointer-events-none" style={{
           boxShadow: 'inset 0 0 160px 40px rgba(255,255,255,.04)',
           animation: 'signalPulse 2s ease-in-out infinite',
         }} />
       )}
 
-      {/* ══ ZOOM CONTROLS — V5.5 Deep Black floating glass, V6.0 Apple Maps 4000 ══
-          RA30: `absolute` (was `fixed`) — positioned relative to the map area,
-          not the viewport. On desktop the map area is the right portion, so
-          `right-4 md:right-8` is 16/32px from the map area's right edge. */}
-      <div className="absolute right-4 md:right-8 top-1/2 -translate-y-1/2 z-20 flex flex-col gap-3 md:gap-4">
+      {/* ══ ZOOM CONTROLS — V5.5 Deep Black floating glass, V6.0 Apple Maps 4000 ══ */}
+      <div className="fixed right-4 md:right-8 top-1/2 -translate-y-1/2 z-20 flex flex-col gap-3 md:gap-4">
         <button
           className="flex items-center justify-center min-h-11 min-w-11 w-11 h-11 rounded-full cursor-pointer transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-[1.02] active:scale-[0.98]"
           style={{
@@ -4343,7 +3291,7 @@ export default function TrackerView() {
           Pseudo-3D Drive Mode state when speed > 40km/h (tilt engaged). */}
       {droneMode && (
         <div
-          className="absolute left-1/2 -translate-x-1/2 z-20 gesture-dim flex items-center gap-2 px-4 py-2 rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+          className="fixed left-1/2 -translate-x-1/2 z-20 gesture-dim flex items-center gap-2 px-4 py-2 rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
           style={{
             // V6.0: expansive top inset (was 48/12) — pushes drone badge below the DynamicIsland.
             top: isMobile ? 64 : 24,
@@ -4356,7 +3304,7 @@ export default function TrackerView() {
           }}
         >
           <Navigation size={11} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.85)' }} />
-          <span className="font-bold uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.85)', fontSize: 'clamp(13px, 1.2vw, 16px)' }}>
+          <span className="font-bold uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.85)', fontSize: 'clamp(9px, 1.2vw, 10px)' }}>
             {driveTilt > 0.5 ? 'DRIVE MODE 3D' : 'DRONE FOLLOW'}
           </span>
         </div>
@@ -4370,7 +3318,7 @@ export default function TrackerView() {
           AT_4: gesture-dim dims during map pan/zoom. */}
       {ghostVisible && ghostrailPts.length >= 2 && (
         <div
-          className="timeline-bar absolute left-1/2 -translate-x-1/2 z-20 gesture-dim"
+          className="timeline-bar fixed left-1/2 -translate-x-1/2 z-20 gesture-dim"
           style={{
             // V6.0 Apple Maps 4000 — expansive bottom insets: 16px mobile, 32px desktop.
             bottom: isMobile ? 16 : 32,
@@ -4381,23 +3329,15 @@ export default function TrackerView() {
             points={ghostrailPts}
             scrubIndex={timeScrubIndex}
             scrubbing={scrubbing}
-            stale={isStaleSignal}
             onScrub={(idx) => {
               setTimeScrubIndex(idx)
               setScrubbing(true)
-              // V6.8 AUTO_LIVE_MODE_ENFORCEMENT — scrubbing exits Live Mode.
-              setIsLiveMode(false)
               // Invalidate map size after scrub change
               if (mapInstanceRef.current) {
                 try { mapInstanceRef.current.invalidateSize() } catch {}
               }
             }}
-            onLive={() => {
-              // V6.8 AUTO_LIVE_MODE_ENFORCEMENT — LIVE button restores Live Mode.
-              setScrubbing(false)
-              setTimeScrubIndex(null)
-              setIsLiveMode(true)
-            }}
+            onLive={() => { setScrubbing(false); setTimeScrubIndex(null) }}
           />
         </div>
       )}
@@ -4412,7 +3352,7 @@ export default function TrackerView() {
         onClick={() => setCookieDrawerOpen(true)}
         title="Guardar sesión de cookies"
         aria-label="Guardar sesión de cookies"
-        className="absolute z-30 right-4 md:right-8 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-[1.04] active:scale-[0.96]"
+        className="fixed z-30 right-4 md:right-8 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-[1.04] active:scale-[0.96]"
         style={{
           bottom: isMobile ? 88 : 96,
           width: 48,
@@ -4468,14 +3408,14 @@ export default function TrackerView() {
           Layout:
             ROW 0: SPOOF BADGE + CONNECTION
             ROW 1: LOCATION label (ONCE ONLY, dedupe)
-            ROW 2: F2 COMPACT SINGLE LINE: 20km | 20% | WIFI | ON·3m | ALTA
+            ROW 2: F2 COMPACT SINGLE LINE: 🚗20km | 🔋20% | 📶WIFI | 📱ON·3m | 📡👍
             ROW 3: BUTTON BAR (flex-wrap for small screens)
             ROW 4: VER MÁS CTA toggle + accordion (F1: reduced max-height)
           ══════════════════════════════════════════════════════════════════ */}
       {/* ══════════════════════════════════════════════════════════════════
           V9 COMPACT HEIGHT-AWARE REDESIGN — layout_priority:
             1. Estado (single compact metrics line)
-            2. Botonera (icon-only: satellite / pin / ghost / clipboard) — INSIDE panel
+            2. Botonera (icon-only: 🛰️ 📍 👻 📋) — INSIDE panel
             3. Cookies (collapsed 34px, force-collapse on tiny)
             4. VER MÁS (only expandable block, hidden on tiny)
           Height budget: desktop 180px / mobile 170px / tiny 140px.
@@ -4515,12 +3455,6 @@ export default function TrackerView() {
         />
       </div>
 
-      </div>{/* ══ END MAP AREA (absolute inset-0) ══ — V6.6 MAP_LIBERATION:
-                 map + all overlays close here. TrackerSheet below is a
-                 `position: fixed` overlay (floating bottom-LEFT widget on
-                 desktop, full-width bottom sheet on mobile). The map's CENTER
-                 is never occluded by the sheet. */}
-
       <TrackerSheet
         isMobile={isMobile}
         isShortViewport={isShortViewport}
@@ -4530,194 +3464,147 @@ export default function TrackerView() {
       >
 
             {/* ══════════════════════════════════════════════════════════════════
-                V6.4 UI_METRICS_DASHBOARD — MasterControlPanel ("Simón Sequence")
-                ══════════════════════════════════════════════════════════════════
-                Replaces the legacy single-line MetricsRow with a 2x3 grid of
-                high-contrast metric cells. Each cell dedicates its own tile
-                to a single telemetry dimension so the operator gets an
-                at-a-glance tactical read instead of a cramped horizontal
-                pill row. Required metrics per directive:
-                  [Pantalla ON/OFF] [WIFI/4G] [Batería %]
-                  [Velocidad]      [Modo]    [Dispositivo]
-                Modo is computed dynamically from speed (<5=A Pie, 5-25=Moto,
-                25-60=Colectivo, >60=Auto). Dispositivo renders device_label
-                (cleaned of Google obfuscated IDs). Velocidad cell carries
-                km recorridos as a sub-read. Última conexión surfaces as a
-                sub-read on the Pantalla cell when there's no live signal.
+                V9 MODULE 1: ESTADO — single compact metrics line (30px)
+                Location+zone live in top StateChip (no duplication).
+                Row: [spoof] [movement] [battery] [network] [screen] [gps] [v] [●ws]
+                Spec examples: 🚶3km · 🔋18% · 📶WiFi · 📱ON · 📡ALTA
             ══════════════════════════════════════════════════════════════════ */}
+            {/* CA_UI_1: Apple Maps Minimalist metrics row — rounded-3xl glass.
+                V6.0: expansive padding + gap-3 md:gap-4 for breathing room. */}
             <div
-              className="p-3 md:p-4 bg-[#0a0a0a]/85 backdrop-blur-xl rounded-3xl border border-white/[0.05] shadow-2xl"
-              style={{ overflow: 'visible' }}
+              className="flex items-center gap-3 md:gap-4 p-3 md:p-4 overflow-x-auto no-scrollbar metrics-scroll bg-[#0a0a0a]/85 backdrop-blur-xl rounded-3xl border border-white/[0.05] shadow-2xl whitespace-nowrap min-h-[44px]"
             >
-              {/* M8: Skeleton shimmer grid while loading (no data yet) */}
+              {/* M8: Skeleton shimmer pills while loading (no data yet) */}
               {!snapshot ? (
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div className="skeleton-shimmer h-16 flex-shrink-0" />
-                  <div className="skeleton-shimmer h-16 flex-shrink-0" />
-                  <div className="skeleton-shimmer h-16 flex-shrink-0" />
-                  <div className="skeleton-shimmer h-16 flex-shrink-0" />
-                  <div className="skeleton-shimmer h-16 flex-shrink-0" />
-                  <div className="skeleton-shimmer h-16 flex-shrink-0" />
-                </div>
+                <>
+                  <div className="skeleton-shimmer h-4 w-10 flex-shrink-0" />
+                  <div className="skeleton-shimmer h-4 w-12 flex-shrink-0" />
+                  <div className="skeleton-shimmer h-4 w-10 flex-shrink-0" />
+                  <div className="skeleton-shimmer h-4 w-14 flex-shrink-0" />
+                  <div className="skeleton-shimmer h-4 w-10 flex-shrink-0" />
+                </>
               ) : (
-                <div className="grid grid-cols-2 gap-2.5">
-                  {/* Cell 1: Pantalla ON/OFF — Monitor icon.
-                      Sub-read shows última conexión when there's no live
-                      signal so the operator sees "OFF · hace 12 min" at
-                      a glance. */}
-                  <MetricCell
-                    icon={Monitor}
-                    label="Pantalla"
-                    value={screen.shortLabel}
-                    sub={!hasLiveSignal && ultimaConexionLabel ? `· ${ultimaConexionLabel}` : undefined}
-                    valueColor={screen.isOn ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.5)'}
-                  />
+              <>
+              {/* SpoofBadge — visual only (🟢🟡🟠🔴) */}
+              <SpoofBadgeV2 result={spoofResult} />
 
-                  {/* Cell 2: Red WIFI/4G — dynamic icon (Wifi/Smartphone/WifiOff). */}
-                  <MetricCell
-                    icon={resolveNetworkIcon(networkTypeToToken(network.type))}
-                    label="Red"
-                    value={network.type || '—'}
-                  />
+              {/* FIX_3: Movement — lucide vector icon (walk/car/bus/sleep/still) */}
+              <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
+                {(() => { const MIcon = resolveMovementIcon(movement.compactIcon); return <MIcon size={12} strokeWidth={1.5} style={{ color: movement.isActive ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.5)' }} /> })()}
+                <span className="font-bold uppercase tracking-wider whitespace-nowrap tabular-nums" style={{ color: movement.isActive ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.5)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{movement.compactValue}</span>
+              </div>
 
-                  {/* Cell 3: Batería % — Battery icon, tabular nums. */}
-                  <MetricCell
-                    icon={Battery}
-                    label="Batería"
-                    value={batteryLabel ? `${batteryLabel}%` : '—'}
-                    valueColor={batteryPct !== null && batteryPct <= 15 ? 'rgba(255,255,255,.55)' : 'rgba(255,255,255,.95)'}
-                  />
-
-                  {/* Cell 4: Velocidad — Gauge icon. Sub-read shows km
-                      recorridos in the 24h window (frontend haversine sum). */}
-                  <MetricCell
-                    icon={Gauge}
-                    label="Velocidad"
-                    value={movement.speedKmh != null ? `${movement.speedKmh.toFixed(1)}` : '—'}
-                    sub={movement.speedKmh != null ? `km/h · ${kmLabel}` : 'km/h'}
-                    valueColor={movement.isActive ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.6)'}
-                  />
-
-                  {/* Cell 5: Modo — dynamic icon (Footprints/Bike/Bus/Car/Moon).
-                      Computed via computeModoInfo using the directive's
-                      explicit speed thresholds. Sleep state wins over speed. */}
-                  <MetricCell
-                    icon={ModoIcon}
-                    label="Modo"
-                    value={modoInfo.label}
-                    valueColor={movement.isActive ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.55)'}
-                  />
-
-                  {/* Cell 6: Dispositivo — Smartphone icon. Renders the
-                      backend-extracted device_label, cleaned of Google
-                      obfuscated IDs (16+ char alphanumeric → "Android · XXXX"). */}
-                  <MetricCell
-                    icon={Smartphone}
-                    label="Dispositivo"
-                    value={deviceLabelClean}
-                  />
+              {/* FIX_3: Battery — lucide Battery icon */}
+              {batteryLabel && (
+                <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
+                  <Battery size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.8)' }} />
+                  <span className="font-bold uppercase tracking-wider whitespace-nowrap tabular-nums" style={{ color: 'rgba(255,255,255,.8)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{batteryLabel}</span>
                 </div>
               )}
 
-              {/* Compact footer row — SpoofBadge + GPS quality + JITTER pulse +
-                  version + ws dot. Kept minimal so the grid stays the visual focus. */}
-              {snapshot && (
-                <div className="flex items-center gap-2 mt-2.5 pt-2 border-t border-white/[.04]">
-                  <SpoofBadgeV2 result={spoofResult} />
-                  <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
-                    <Signal size={11} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.7)' }} />
-                    <span className="font-bold uppercase tracking-wider tabular-nums" style={{ color: 'rgba(255,255,255,.7)', fontSize: 'clamp(10px, 1.2vw, 12px)' }}>GPS {gpsQuality}</span>
-                  </div>
+              {/* FIX_3: Network — lucide Wifi/Smartphone/WifiOff icon */}
+              <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
+                {(() => { const NIcon = resolveNetworkIcon(networkTypeToToken(network.type)); return <NIcon size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.8)' }} /> })()}
+                <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color: 'rgba(255,255,255,.8)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{network.type}</span>
+              </div>
 
-                  {/* V6.10 STALE_DATA_EXPOSURE — "Señal Latente" badge.
-                      Renders when data age >10 min. Amber pulse exposes that
-                      the displayed data is CACHED, not real-time. When age
-                      exceeds 15 min (radio silence), the Pantalla ON indicator
-                      is also forced OFF (see deriveScreenState override above). */}
-                  {isStaleSignal && (
-                    <div
-                      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full flex-shrink-0 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
-                      style={{
-                        background: 'rgba(255,170,30,.12)',
-                        border: '1px solid rgba(255,170,30,.35)',
-                      }}
-                      title={dataAgeMin != null ? `Última señal real hace ${Math.round(dataAgeMin)} min — datos en caché` : 'Datos en caché — sin señal reciente'}
-                      aria-label="Señal latente"
-                    >
-                      <span
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: '50%',
-                          background: 'rgba(255,170,30,.95)',
-                          boxShadow: '0 0 6px rgba(255,170,30,.7)',
-                          animation: 'v68JitterPulse 1.8s ease-in-out infinite',
-                          flexShrink: 0,
-                        }}
-                      />
-                      <span
-                        className="font-bold uppercase tracking-wider tabular-nums"
-                        style={{ color: 'rgba(255,170,30,.95)', fontSize: 'clamp(10px, 1.2vw, 12px)', letterSpacing: '0.06em' }}
-                      >
-                        LATENTE{dataAgeMin != null ? ` ${Math.round(dataAgeMin)}m` : ''}
-                      </span>
-                    </div>
-                  )}
+              {/* FIX_3: Screen — lucide Smartphone icon */}
+              <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
+                <Smartphone size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.8)' }} />
+                <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color: 'rgba(255,255,255,.8)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{screen.shortLabel}</span>
+              </div>
 
-                  {/* V6.8 JITTER_AWARENESS_UI — secondary activity pulse.
-                      Shows ONLY when GPS jitter is detected (coordinates
-                      fluctuating within <10m radius). Confirms the device is
-                      ACTIVE in-place (screen on, GPS polling) even though the
-                      speed reads 0.0 km/h strict per the API. The pulse uses
-                      Apple-blue (#0a84ff) to match the Live Mode accent —
-                      distinct from the GPS-quality white badge so the operator
-                      can tell at a glance: "static but active". */}
-                  {jitterDetected && (
-                    <div
-                      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full flex-shrink-0 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
-                      style={{
-                        background: 'rgba(10,132,255,.12)',
-                        border: '1px solid rgba(10,132,255,.35)',
-                      }}
-                      title="GPS Jitter detectado — actividad en sitio sin traslación (velocidad 0.0 km/h estricta)"
-                      aria-label="GPS Jitter detectado"
-                    >
-                      {/* Activity pulse dot — Apple blue, 1.4s pulse cycle */}
-                      <span
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: '50%',
-                          background: 'rgba(10,132,255,.95)',
-                          boxShadow: '0 0 6px rgba(10,132,255,.7)',
-                          animation: 'v68JitterPulse 1.4s ease-in-out infinite',
-                          flexShrink: 0,
-                        }}
-                      />
-                      <span
-                        className="font-bold uppercase tracking-wider"
-                        style={{ color: 'rgba(10,132,255,.95)', fontSize: 'clamp(10px, 1.2vw, 12px)', letterSpacing: '0.06em' }}
-                      >
-                        JITTER
-                      </span>
-                    </div>
-                  )}
-                  <span className="font-mono text-white/15 flex-shrink-0 ml-auto tabular-nums" style={{ fontSize: 'clamp(10px, 1.1vw, 12px)' }}>v{snapshotVersion}</span>
-                  <span className="font-mono flex-shrink-0" style={{ color: wsConnected ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.3)', fontSize: 12 }}>
-                    {wsConnected ? '●' : '○'}
-                  </span>
-                </div>
+              {/* FIX_3: GPS — lucide Signal icon */}
+              <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
+                <Signal size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.8)' }} />
+                <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color: 'rgba(255,255,255,.8)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{gpsQuality}</span>
+              </div>
+
+              {/* Right-side: version + ws dot (compact, end of row) */}
+              <span className="font-mono text-white/15 flex-shrink-0 ml-auto tabular-nums" style={{ fontSize: 'clamp(6px, 1.2vw, 8px)' }}>v{snapshotVersion}</span>
+              <span className="font-mono flex-shrink-0" style={{ color: wsConnected ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.3)', fontSize: 11 }}>
+                {wsConnected ? '●' : '○'}
+              </span>
+              </>
               )}
             </div>
 
-            {/* V6.5 DASHBOARD_UNIFICATION_9_16: SpeedGauge block REMOVED per
-                directive "Eliminar Velocímetro por completo del código (limpieza
-                total)". The velocity read is already surfaced in the
-                MasterControlPanel "Velocidad" cell (Simón Sequence 2x3 grid).
-                The kinetic telemetry (VELOCIDAD/MODO/RUMBO/LUZ) that lived in
-                the SpeedGauge companion card is no longer rendered — the
-                dashboard is now the single source of truth for at-a-glance
-                tactical reads, with no redundant velocity widget. */}
+            {/* ══════════════════════════════════════════════════════════════════
+                MC_8_04 (stracker_v8_hyper_premium): SPEED GAUGE — Apple Watch
+                glass ring. On desktop the panel is always open (render always).
+                On mobile, only render at HALF or FULL snap (T3-step4) so the
+                closed 38px handle stays minimal. Gives an at-a-glance kinetic
+                read: ring fill = speed, color band = intensity (cyan→green→
+                orange→red).
+            ══════════════════════════════════════════════════════════════════ */}
+            {(!isMobile || sheetSnap === 'half' || sheetSnap === 'full') && (
+              <div
+                className="flex items-center gap-4 md:gap-6 p-4 md:p-6 rounded-3xl shadow-2xl transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+                style={{
+                  background: 'rgba(10,10,10,.85)',
+                  backdropFilter: 'blur(30px) saturate(180%)',
+                  WebkitBackdropFilter: 'blur(30px) saturate(180%)',
+                  border: '1px solid rgba(255,255,255,.05)',
+                  boxShadow: '0 8px 32px rgba(0,0,0,.5), 0 24px 64px rgba(0,0,0,.45)',
+                  animation: 'cookiesExpand 250ms ease-out',
+                }}
+              >
+                <SpeedGauge speedKmh={movement.speedKmh} size={isMobile ? 96 : 108} />
+                {/* V5.6 UI_MICRO_CONTRAST_02: inner card bg-white/5 lifts the
+                    telemetry readouts off the panel base, creating depth.
+                    V6.0: gap-2.5 md:gap-3 + p-3 md:p-3.5 for breathing room.
+                    V5.6 UI_HIERARCHY_01: labels font-light/white-50, values
+                    font-semibold/white — radical label/value differentiation. */}
+                <div
+                  className="flex flex-col gap-2.5 md:gap-3 flex-1 min-w-0 rounded-2xl p-3 md:p-3.5 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+                  style={{
+                    background: 'rgba(255,255,255,.04)',
+                    border: '1px solid rgba(255,255,255,.03)',
+                  }}
+                >
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="font-light uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.5)', fontSize: 10, letterSpacing: '0.06em' }}>VELOCIDAD</span>
+                    <span
+                      className="font-semibold tabular-nums"
+                      style={{ color: movement.isActive ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.5)', fontSize: 14, letterSpacing: '-0.01em' }}
+                    >
+                      {movement.speedKmh == null ? '--' : `${movement.speedKmh.toFixed(1)} km/h`}
+                    </span>
+                  </div>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="font-light uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.5)', fontSize: 10, letterSpacing: '0.06em' }}>MODO</span>
+                    <span
+                      className="font-semibold uppercase tracking-wider"
+                      style={{ color: movement.isActive ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.5)', fontSize: 12 }}
+                    >
+                      {movement.displayMode}
+                    </span>
+                  </div>
+                  {/* LOGIC_01 (stracker_v5.2_rev): RUMBO solo se renderiza si
+                      el objetivo está en movimiento. En modo QUIETA/STILL/SLEEP
+                      el rumbo es meaningless (dead code renderizado). */}
+                  {movement.isActive && (
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="font-light uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.5)', fontSize: 10, letterSpacing: '0.06em' }}>RUMBO</span>
+                      <span className="font-semibold tabular-nums" style={{ color: 'rgba(255,255,255,.85)', fontSize: 12 }}>
+                        {pyState?.gps?.heading != null ? `${Math.round(pyState.gps.heading)}°` : '--'}
+                      </span>
+                    </div>
+                  )}
+                  {/* MC_8_02: circadian phase readout */}
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="font-light uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.5)', fontSize: 10, letterSpacing: '0.06em' }}>LUZ</span>
+                    <span className="font-semibold uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.85)', fontSize: 11 }}>
+                      {(() => {
+                        const phase = computePhase(circadianNow)
+                        const labels: Record<string, string> = { night_deep: 'NOCHE', dawn: 'AMANECER', day: 'DÍA', golden: 'DORADA', dusk: 'ATARDECER', night: 'NOCHE' }
+                        return labels[phase] || 'DÍA'
+                      })()}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* ══════════════════════════════════════════════════════════════════
                 UI_METRICS_02 (stracker_v5.3_integration): AnalyticsPanel.
@@ -4725,7 +3612,7 @@ export default function TrackerView() {
                 status — drawn from the same ghostrail data store. Recomputes on
                 every poll via useMemo (dynamic, no reload). Glassmorphism
                 consistent with the TrackerSheet; occupies the space between the
-                MasterControlPanel and the Cookies block in a balanced 3-col grid.
+                SpeedGauge and the Cookies block in a balanced 3-col grid.
             ══════════════════════════════════════════════════════════════════ */}
             {(!isMobile || sheetSnap === 'half' || sheetSnap === 'full') && (
               <AnalyticsPanel
@@ -4760,7 +3647,7 @@ export default function TrackerView() {
                   ? '0 0 12px rgba(255,255,255,.04), inset 0 0 20px rgba(255,255,255,.02)'
                   : '0 0 8px rgba(255,255,255,.02)',
                 color: showVerMas ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.55)',
-                fontSize: 'clamp(14px, 2.2vw, 18px)',
+                fontSize: 'clamp(10px, 2.2vw, 12px)',
                 fontWeight: 600,
                 letterSpacing: '0.15em',
                 textTransform: 'uppercase' as const,
@@ -4806,9 +3693,9 @@ export default function TrackerView() {
                   <div className="mb-2 pb-2 border-b border-white/[.04]">
                     <div className="flex items-center gap-2 mb-1.5">
                       <Microscope size={11} className="text-white/60" />
-                      <span className="font-bold uppercase tracking-wider text-white/60" style={{ fontSize: 12 }}>Forensic Export</span>
+                      <span className="font-bold uppercase tracking-wider text-white/60" style={{ fontSize: 9 }}>Forensic Export</span>
                       {loiteringClusters.length > 0 && (
-                        <span className="px-1.5 py-0.5 rounded-full font-bold" style={{ background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,.85)', fontSize: 13, border: '1px solid rgba(255,255,255,0.15)' }}>
+                        <span className="px-1.5 py-0.5 rounded-full font-bold" style={{ background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,.85)', fontSize: 8, border: '1px solid rgba(255,255,255,0.15)' }}>
                           {loiteringClusters.length} LOITER
                         </span>
                       )}
@@ -4820,7 +3707,7 @@ export default function TrackerView() {
                           background: forensicCopied ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.06)',
                           border: `1px solid ${forensicCopied ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.12)'}`,
                           color: forensicCopied ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.85)',
-                          fontSize: 'clamp(13px, 2vw, 17px)',
+                          fontSize: 'clamp(9px, 2vw, 11px)',
                           fontWeight: 600,
                           letterSpacing: '0.05em',
                         }}
@@ -4843,7 +3730,7 @@ export default function TrackerView() {
                         <Download size={13} />
                       </button>
                     </div>
-                    <div className="mt-1 text-white/25" style={{ fontSize: 13 }}>
+                    <div className="mt-1 text-white/25" style={{ fontSize: 8 }}>
                       {ghostrailPts.length} pts · {loiteringClusters.length} hotspots · spoof {spoofResult.score}%
                     </div>
                   </div>
@@ -4852,11 +3739,11 @@ export default function TrackerView() {
                   {!compressSections || openSections.gps ? (
                   <AccordionSection title="GPS" isOpen={openSections.gps} onToggle={() => toggleSection('gps')}>
                     <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}><span className="text-white/25 uppercase">Lugar</span><span className="text-white/70 font-medium text-right truncate ml-1">{verMasGps?.place || '---'}</span></div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}><span className="text-white/25 uppercase">Señal</span><span className="text-white/70 font-medium">{verMasGps?.signal || '---'}</span></div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}><span className="text-white/25 uppercase">Lat</span><span className="text-white/70 font-mono" style={{ fontSize: 'clamp(12px, 1.6vw, 15px)' }}>{verMasGps?.lat_str || '---'}</span></div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}><span className="text-white/25 uppercase">Prec.</span><span className="text-white/70 font-medium">{verMasGps?.accuracy || '---'}</span></div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}><span className="text-white/25 uppercase">Lng</span><span className="text-white/70 font-mono" style={{ fontSize: 'clamp(12px, 1.6vw, 15px)' }}>{verMasGps?.lng_str || '---'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}><span className="text-white/25 uppercase">Lugar</span><span className="text-white/70 font-medium text-right truncate ml-1">{verMasGps?.place || '---'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}><span className="text-white/25 uppercase">Señal</span><span className="text-white/70 font-medium">{verMasGps?.signal || '---'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}><span className="text-white/25 uppercase">Lat</span><span className="text-white/70 font-mono" style={{ fontSize: 'clamp(7px, 1.6vw, 9px)' }}>{verMasGps?.lat_str || '---'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}><span className="text-white/25 uppercase">Prec.</span><span className="text-white/70 font-medium">{verMasGps?.accuracy || '---'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}><span className="text-white/25 uppercase">Lng</span><span className="text-white/70 font-mono" style={{ fontSize: 'clamp(7px, 1.6vw, 9px)' }}>{verMasGps?.lng_str || '---'}</span></div>
                     </div>
                   </AccordionSection>
                   ) : null}
@@ -4865,9 +3752,9 @@ export default function TrackerView() {
                   {(!compressSections) && (
                   <AccordionSection title="Sesión" isOpen={openSections.sesion} onToggle={() => toggleSection('sesion')}>
                     <div className="grid grid-cols-3 gap-2">
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(11px, 1.2vw, 13px)' }}>Duración</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(13px, 2vw, 17px)' }}>{verMasSession?.duration || '0m'}</div></div>
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(11px, 1.2vw, 13px)' }}>Screen ON</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(13px, 2vw, 17px)' }}>{verMasSession?.screen_on || '0m'}</div></div>
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(11px, 1.2vw, 13px)' }}>Screen OFF</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(13px, 2vw, 17px)' }}>{verMasSession?.screen_off || '0m'}</div></div>
+                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Duración</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSession?.duration || '0m'}</div></div>
+                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Screen ON</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSession?.screen_on || '0m'}</div></div>
+                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Screen OFF</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSession?.screen_off || '0m'}</div></div>
                     </div>
                   </AccordionSection>
                   )}
@@ -4876,9 +3763,9 @@ export default function TrackerView() {
                   {(!compressSections) && (
                   <AccordionSection title="Sistema" isOpen={openSections.sistema} onToggle={() => toggleSection('sistema')}>
                     <div className="grid grid-cols-3 gap-2">
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(11px, 1.2vw, 13px)' }}>Red</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(13px, 2vw, 17px)' }}>{verMasSystem?.network || 'OFFLINE'}</div></div>
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(11px, 1.2vw, 13px)' }}>Batería</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(13px, 2vw, 17px)' }}>{verMasSystem?.battery_raw || '---'}</div></div>
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(11px, 1.2vw, 13px)' }}>Movimiento</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(13px, 2vw, 17px)' }}>{verMasSystem?.motion_raw || '---'}</div></div>
+                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Red</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSystem?.network || 'OFFLINE'}</div></div>
+                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Batería</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSystem?.battery_raw || '---'}</div></div>
+                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Movimiento</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSystem?.motion_raw || '---'}</div></div>
                     </div>
                   </AccordionSection>
                   )}
@@ -4890,7 +3777,7 @@ export default function TrackerView() {
                         {verMasEvents.slice().reverse().map((ev, i) => (
                           <div key={`vm-${i}`} className="flex items-center gap-1.5 py-0.5">
                             <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: ev.color }} />
-                            <span className="text-white/40" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>{ev.msg}</span>
+                            <span className="text-white/40" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{ev.msg}</span>
                           </div>
                         ))}
                       </div>
@@ -4915,38 +3802,38 @@ export default function TrackerView() {
                           return (
                             <div key={ev.seq} className="flex items-center gap-1.5 py-0.5">
                               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{background:c}} />
-                              <span className="font-bold uppercase" style={{color:c, fontSize: 13}}>{l}</span>
-                              {d && <span className="text-white/35 truncate" style={{ fontSize: 12 }}>{d}</span>}
-                              <span className="text-white/12 font-mono ml-auto" style={{ fontSize: 13 }}>{ts}</span>
+                              <span className="font-bold uppercase" style={{color:c, fontSize: 8}}>{l}</span>
+                              {d && <span className="text-white/35 truncate" style={{ fontSize: 9 }}>{d}</span>}
+                              <span className="text-white/12 font-mono ml-auto" style={{ fontSize: 6 }}>{ts}</span>
                             </div>
                           )
                         })}
                       </div>
                     )}
                     {(!verMasEvents?.length) && events.length===0 && (
-                      <div className="text-white/12 py-0.5 text-center" style={{ fontSize: 13 }}>Sin eventos</div>
+                      <div className="text-white/12 py-0.5 text-center" style={{ fontSize: 8 }}>Sin eventos</div>
                     )}
                   </AccordionSection>
 
                   {/* GhostRail 24h — V7: Single canonical source, time-ordered */}
                   <AccordionSection title="GhostRail 24h" isOpen={openSections.ghostrail} onToggle={() => toggleSection('ghostrail')}>
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                      <span className="text-white/20 uppercase" style={{ fontSize: 'clamp(12px, 1.4vw, 15px)' }}>Pts</span>
-                      <span className="text-white/60 font-medium" style={{ fontSize: 'clamp(13px, 2vw, 17px)' }}>{ghostrailPts.length}</span>
-                      <span className="text-white/20 uppercase" style={{ fontSize: 'clamp(12px, 1.4vw, 15px)' }}>Routed</span>
-                      <span className="text-white/60 font-medium" style={{ fontSize: 'clamp(13px, 2vw, 17px)' }}>{routedTrailPts.length}</span>
-                      <span className="text-white/20 uppercase" style={{ fontSize: 'clamp(12px, 1.4vw, 15px)' }}>Src</span>
-                      <span className="text-white/60 font-medium" style={{ fontSize: 'clamp(13px, 2vw, 17px)' }}>{ghostrailDiagnostics.current.source}</span>
+                      <span className="text-white/20 uppercase" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>Pts</span>
+                      <span className="text-white/60 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{ghostrailPts.length}</span>
+                      <span className="text-white/20 uppercase" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>Routed</span>
+                      <span className="text-white/60 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{routedTrailPts.length}</span>
+                      <span className="text-white/20 uppercase" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>Src</span>
+                      <span className="text-white/60 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{ghostrailDiagnostics.current.source}</span>
                     </div>
                     {/* V7 Diagnostics */}
                     {(() => {
                       const d = ghostrailDiagnostics.current
                       return d.total > 0 ? (
-                        <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.06)', color: 'rgba(255,255,255,.8)', border: '1px solid rgba(255,255,255,.1)', fontSize: 13 }}>
+                        <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.06)', color: 'rgba(255,255,255,.8)', border: '1px solid rgba(255,255,255,.1)', fontSize: 8 }}>
                           V7: {d.total} pts [live:{d.live} cache:{d.cache}]
                         </div>
                       ) : (
-                        <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.04)', color: 'rgba(255,255,255,.5)', border: '1px solid rgba(255,255,255,.08)', fontSize: 13 }}>
+                        <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.04)', color: 'rgba(255,255,255,.5)', border: '1px solid rgba(255,255,255,.08)', fontSize: 8 }}>
                           V7: No trail data
                         </div>
                       )
@@ -4955,13 +3842,13 @@ export default function TrackerView() {
                       const d = ghostrailDiagnostics.current
                       const hasDiscards = d.discarded_age > 0 || d.discarded_no_ts > 0 || d.discarded_dup > 0
                       return hasDiscards ? (
-                        <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.04)', color: 'rgba(255,255,255,.5)', border: '1px solid rgba(255,255,255,.08)', fontSize: 13 }}>
+                        <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.04)', color: 'rgba(255,255,255,.5)', border: '1px solid rgba(255,255,255,.08)', fontSize: 8 }}>
                           age:{d.discarded_age} no_ts:{d.discarded_no_ts} dup:{d.discarded_dup}
                         </div>
                       ) : null
                     })()}
                     {rawGhostrailPts.length === 0 && ghostrailPts.length > 0 && (
-                      <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.04)', color: 'rgba(255,255,255,.5)', border: '1px solid rgba(255,255,255,.08)', fontSize: 13 }}>
+                      <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.04)', color: 'rgba(255,255,255,.5)', border: '1px solid rgba(255,255,255,.08)', fontSize: 8 }}>
                         Rescue mode (cache)
                       </div>
                     )}
@@ -4970,13 +3857,13 @@ export default function TrackerView() {
                         {verMasGhostrail.map((z, i) => (
                           <div key={i} className="flex items-center gap-1 px-2 py-0.5 rounded-full" style={{background:'rgba(255,255,255,.03)',border:'1px solid rgba(255,255,255,.04)'}}>
                             <div className="w-2 h-2 rounded-full" style={{background:z.color}} />
-                            <span className="text-white/40" style={{ fontSize: 12 }}>{z.name}</span>
-                            <span className="text-white/70 font-medium" style={{ fontSize: 12 }}>{z.duration}</span>
+                            <span className="text-white/40" style={{ fontSize: 9 }}>{z.name}</span>
+                            <span className="text-white/70 font-medium" style={{ fontSize: 9 }}>{z.duration}</span>
                           </div>
                         ))}
                       </div>
                     ) : (
-                      <div className="text-white/12 py-0.5" style={{ fontSize: 13 }}>Sin datos de zonas — 24h rebuild pendiente</div>
+                      <div className="text-white/12 py-0.5" style={{ fontSize: 8 }}>Sin datos de zonas — 24h rebuild pendiente</div>
                     )}
                   </AccordionSection>
 
@@ -4984,139 +3871,139 @@ export default function TrackerView() {
                   {!compressSections && (
                   <AccordionSection title="Diagnóstico" isOpen={openSections.diagnostico} onToggle={() => toggleSection('diagnostico')}>
                     <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">WS</span>
                         <span className="font-medium" style={{ color: wsConnected ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
                           {wsConnected ? 'Conectado' : 'Desconectado'}
                         </span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Kernel</span>
                         <span className="text-white/70 font-medium">{snapshot ? 'Activo' : 'Sin señal'}</span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Seq</span>
-                        <span className="text-white/70 font-mono" style={{ fontSize: 'clamp(12px, 1.4vw, 15px)' }}>{kernelSeq}</span>
+                        <span className="text-white/70 font-mono" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>{kernelSeq}</span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Versión</span>
-                        <span className="text-white/70 font-mono" style={{ fontSize: 'clamp(12px, 1.4vw, 15px)' }}>{snapshotVersion}</span>
+                        <span className="text-white/70 font-mono" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>{snapshotVersion}</span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Trail</span>
                         <span className="text-white/70 font-medium">{ghostrailPts.length} pts [{ghostrailDiagnostics.current.source}]</span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Zoom</span>
-                        <span className="text-white/70 font-mono" style={{ fontSize: 'clamp(12px, 1.4vw, 15px)' }}>{userZoom}x</span>
+                        <span className="text-white/70 font-mono" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>{userZoom}x</span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Follow</span>
                         <span className="font-medium" style={{ color: followMode ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
                           {followMode ? 'ON' : 'OFF'}
                         </span>
                       </div>
                       {/* MAGIA4: Drone Follow Mode diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Drone</span>
                         <span className="font-medium" style={{ color: droneMode ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
                           {droneMode ? 'ACTIVE' : 'idle'}
                         </span>
                       </div>
                       {/* MAGIA1: Time scrubber diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Scrub</span>
                         <span className="font-medium" style={{ color: scrubbing ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
                           {scrubbing ? `idx ${timeScrubIndex}` : 'live'}
                         </span>
                       </div>
                       {/* V5.7 NAV_02: Heading diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Heading</span>
                         <span className="font-medium" style={{ color: headingState.heading != null ? 'rgba(255,255,255,.7)' : 'rgba(255,255,255,.4)' }}>
                           {headingState.heading != null ? `${Math.round(headingState.heading)}°${headingState.latched ? ' (latch)' : ''}` : '—'}
                         </span>
                       </div>
                       {/* V5.7 NAV_03: Snap-to-door diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Snap</span>
                         <span className="font-medium" style={{ color: snapState.active ? 'rgba(255,255,255,.7)' : 'rgba(255,255,255,.4)' }}>
                           {snapState.active ? `on ${(snapState.progress * 100).toFixed(0)}%` : 'off'}
                         </span>
                       </div>
                       {/* V5.8 INFRA_REALTIME_SOCKETS: Socket.io diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Socket</span>
                         <span className="font-medium" style={{ color: socketConnected ? 'rgba(10,132,255,.85)' : 'rgba(255,255,255,.4)' }}>
                           {socketConnected ? 'WS Live' : 'HTTP poll'}
                         </span>
                       </div>
                       {/* V5.8 SECURITY_FORTRESS: Encryption diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Crypto</span>
                         <span className="font-medium" style={{ color: 'rgba(255,255,255,.7)' }}>
                           AES-256
                         </span>
                       </div>
                       {/* MAGIA2: Loitering clusters diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Loiter</span>
                         <span className="font-medium" style={{ color: loiteringClusters.length > 0 ? 'rgba(255,255,255,.7)' : 'rgba(255,255,255,.4)' }}>
                           {loiteringClusters.length} clusters
                         </span>
                       </div>
                       {/* SYS3: Smart polling diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Poll</span>
                         <span className="font-medium" style={{ color: wsConnected ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
                           {wsConnected ? 'KILLED (fresh)' : 'ARMED (3s)'}
                         </span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Cookies</span>
                         <span className="text-white/70 font-medium">{lastCookieRefresh || '---'}</span>
                       </div>
                       {/* F6: Screen state inference diagnostics */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Screen</span>
                         <span className="font-medium" style={{ color: screen.isOn ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
                           {screen.isOn ? 'ON' : 'OFF'} · {screen.confidence}%
                         </span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Screen Src</span>
-                        <span className="text-white/40 font-mono" style={{ fontSize: 'clamp(11px, 1.2vw, 14px)' }}>{screen.source}</span>
+                        <span className="text-white/40 font-mono" style={{ fontSize: 'clamp(6px, 1.2vw, 8px)' }}>{screen.source}</span>
                       </div>
                       {/* L1-L5: PlaceBadge diagnostics */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Place</span>
                         <span className="font-medium" style={{ color: placeBadge.type ? placeBadge.color : 'rgba(255,255,255,.4)' }}>
                           {placeBadge.type ? `${placeBadge.icon} ${placeBadge.value || placeBadge.type} · ${placeBadge.confidence}%` : '—'}
                         </span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Place Src</span>
-                        <span className="text-white/40 font-mono" style={{ fontSize: 'clamp(11px, 1.2vw, 14px)' }}>{placeBadge.source}</span>
+                        <span className="text-white/40 font-mono" style={{ fontSize: 'clamp(6px, 1.2vw, 8px)' }}>{placeBadge.source}</span>
                       </div>
                       {/* M3+M4: Spoof diagnostics */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Spoof</span>
                         <span className="font-medium" style={{ color: spoofResult.color }}>
                           {spoofResult.icon} {spoofResult.score}% ({spoofResult.strongSignalCount} strong)
                         </span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Spoof Sig</span>
-                        <span className="text-white/40 font-mono" style={{ fontSize: 'clamp(11px, 1.2vw, 14px)' }}>{spoofResult.signals.join(', ') || 'none'}</span>
+                        <span className="text-white/40 font-mono" style={{ fontSize: 'clamp(6px, 1.2vw, 8px)' }}>{spoofResult.signals.join(', ') || 'none'}</span>
                       </div>
                       {/* M1: Sleep inference diagnostics */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Sleep</span>
                         <span className="font-medium" style={{ color: movement.inferredMode === 'SLEEP' ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
                           {movement.inferredMode === 'SLEEP' ? 'DORMIDA' : 'DESPIERTA'}
                         </span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(12px, 1.8vw, 16px)' }}>
+                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
                         <span className="text-white/25 uppercase">Mode</span>
                         <span className="font-medium" style={{ color: movement.isActive ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
                           {movement.displayMode} ({movement.inferredMode})
@@ -5128,7 +4015,7 @@ export default function TrackerView() {
                 </div>
 
                 {/* Kernel footer */}
-                <div className="px-3 pb-2 pt-1 border-t border-white/[.03] text-white/10 font-mono flex justify-between" style={{ fontSize: 13 }}>
+                <div className="px-3 pb-2 pt-1 border-t border-white/[.03] text-white/10 font-mono flex justify-between" style={{ fontSize: 8 }}>
                   <span>EVENT_SOURCED_KERNEL</span>
                   <span>{wsConnected ? 'WS_CONNECTED' : 'HTTP_FALLBACK'}</span>
                 </div>
@@ -5143,7 +4030,7 @@ export default function TrackerView() {
       {/* ══ M8: LOADING — V5.5 Deep Black non-invasive skeleton, V6.0 Apple Maps 4000 ══ */}
       {!snapshot && (
         <div
-          className="absolute top-4 md:top-8 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-4 py-2 rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+          className="fixed top-4 md:top-8 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-4 py-2 rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
           style={{
             background: 'rgba(10,10,10,.85)',
             backdropFilter: 'blur(30px) saturate(180%)',

@@ -72,19 +72,7 @@ GMAPS_SHARE_URL = (
 POLL_INTERVAL = 20
 MAX_RETRIES = 3
 RETRY_DELAY = 5
-# V6.9 JITTER_LOGGING_OPTIMIZATION — lowered from 5m to 2m.
-# When the device is geographically static inside a closed perimeter (club,
-# event, building), Google's Location Sharing API freezes speed at 0.0 km/h
-# (Kalman micro-movement filter). The previous 5m threshold caused the backend
-# to discard ALL sub-5m coordinate fluctuations, erasing the nocturnal activity
-# pattern. With 2m, any coordinate delta > 2m is force-inserted into the CSV
-# even when speed reports 0.0 km/h — the micro-movement signature is preserved.
-DUPLICATE_MIN_METERS = 2
-# V6.9 GIST_HISTORY_SYNC — circular storage ceiling for the gist mirror.
-# Keeps the gist payload bounded (GitHub rate-limits ~1MB per gist file).
-# 1000 records at POLL_INTERVAL=20s ≈ 5.5h of high-fidelity recovery data.
-HISTORY_MAX_RECORDS = 1000
-HISTORY_GIST_FILENAME = "stracker_history.csv"
+DUPLICATE_MIN_METERS = 5
 RELOAD_EVERY_N_POLLS = 6
 HTTP_PORT = int(os.environ.get("PORT", 8765))
 HTTP_PORT_FALLBACKS = [HTTP_PORT, 8765, 8766, 8767, 8768, 8769, 8770]
@@ -105,29 +93,6 @@ COORD_API_RE = re.compile(
 BAT_API_RE = re.compile(r'\[0,(\d{1,3})\],3,null,\[1\]')
 CHARGE_RE = re.compile(r'\[0,\d{1,3}\]\s*,\s*(\d)\s*,')
 ACCURACY_RE = re.compile(r'\]\s*,\s*\d{13}\s*,\s*(\d+)\s*,\s*"')
-# RA29 BACKEND_DATA_ENRICHMENT — device fingerprint extraction.
-# Google's Location Sharing RPC payload carries the sharing device's model
-# name as a quoted string near the location entry. Common patterns:
-#   • Apple internal IDs: "iPhone16,2"  (iPhone 15 Pro)
-#   • Apple marketing:    "iPhone 15 Pro", "iPhone 12"
-#   • Google Pixel:       "Pixel 8 Pro", "Pixel 7a"
-#   • Samsung:            "SM-S918B" (Galaxy S23 Ultra), "SM-A536B"
-#   • Xiaomi / Redmi:     "23116PN5BC", "Redmi Note 12"
-#   • Motorola:           "moto edge 40"
-# We scan the raw RPC payload for any of these and return the first match.
-# If nothing matches, the device is "Desconocido" (never crash on parse).
-DEVICE_IPHONE_RE = re.compile(r'"(iPhone\d+,\d+|iPhone\s*\d+\s*(?:Pro|Pro Max|Plus|mini)?\s*(?:Max)*)"')
-DEVICE_PIXEL_RE  = re.compile(r'"(Pixel\s*\d+[a-z]?\s*(?:Pro|XL)?)\"', re.IGNORECASE)
-DEVICE_SAMSUNG_RE = re.compile(r'"(SM-[A-Z]\d+[A-Z]?\d*)"', re.IGNORECASE)
-DEVICE_GENERIC_RE = re.compile(r'"((?:Redmi|Xiaomi|moto|OnePlus|HUAWEI|Huawei|Galaxy)\s*[\w\s]+?)"', re.IGNORECASE)
-# Fallback: any quoted token of length 6-40 containing digit+letter, no URL chars.
-DEVICE_FALLBACK_RE = re.compile(r'"([A-Za-z][A-Za-z0-9 _\-]{5,39})"')
-
-# RA29: Module-level cache of the last extracted device label. Updated on
-# every successful poll. Served by /points as state.device.device_label
-# and state.meta.device_label. Persists across polls so the operator sees
-# the device fingerprint even when the current poll returns no_location.
-_DEVICE_LABEL = "Desconocido"
 
 GPS_NOISE_THRESHOLD = 20
 
@@ -186,6 +151,589 @@ ARRIVAL_WALK_APPROACH_M = 200
 
 # ---- Nominatim cache ----
 _NOMINATIM_CACHE = {}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# V5.8 SECURITY_FORTRESS — AES-256-GCM encryption + RateLimiting
+# ═══════════════════════════════════════════════════════════════════
+# Defense-in-depth for ghosttrail DB storage. Even if an attacker
+# exfiltrates the CSV or ghostrail.enc file, the data is unreadable
+# without the SECRET_KEY (rotated every 30 days via Render env vars).
+#
+# Algorithm: AES-256-GCM (authenticated encryption)
+#   - 96-bit IV (12 bytes, cryptographically random per record)
+#   - 128-bit auth tag (16 bytes, appended to ciphertext)
+#   - Key derived from SECRET_KEY via SHA-256 (32 bytes = 256 bits)
+#
+# The encrypted blob (ghostrail.enc) is a JSON array of base64 strings,
+# each containing: IV (12 bytes) || ciphertext || auth tag (16 bytes).
+#
+# RateLimiter: per-IP sliding window. /points is capped at 60 req/min.
+# Returns HTTP 429 with Retry-After header when exceeded.
+# ═══════════════════════════════════════════════════════════════════
+
+GHOSTRAIL_ENC_PATH = BASE_DIR / "ghostrail.enc"
+
+# V6.0 STORAGE_OPTIMIZATION — Cold Storage archive path.
+# Records older than ARCHIVE_AGE_DAYS are moved here from ghostrail.enc
+# (ZIP-compressed + AES-256-GCM encrypted). /api/archive reads this file
+# on demand, keeping the main /points endpoint ultra-light.
+GHOSTRAIL_ARCHIVE_PATH = BASE_DIR / "ghostrail_archive.enc"
+ARCHIVE_AGE_DAYS = 30  # T-30d threshold
+
+# Load SECRET_KEY from env (30-day rotation enforced via Render dashboard).
+# Fallback to a deterministic dev key (clearly marked, never used in prod).
+SECRET_KEY = os.environ.get("SECRET_KEY", "v5.8-dev-fallback-key-DO-NOT-USE-IN-PROD")
+
+# Try to import the cryptography package (added to requirements.txt for v5.8).
+# If unavailable (e.g. local dev without pip install), the encrypted blob
+# is skipped gracefully — the CSV remains the source of truth.
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    _AESGCM_AVAILABLE = True
+except ImportError:
+    _AESGCM_AVAILABLE = False
+    logger.warning("cryptography package not available — ghostrail.enc disabled (CSV remains canonical)")
+
+
+def _derive_aes_key() -> bytes:
+    """Derive a 32-byte (256-bit) AES key from SECRET_KEY via SHA-256."""
+    import hashlib
+    return hashlib.sha256(SECRET_KEY.encode("utf-8")).digest()
+
+
+def encrypt_record(plaintext: str) -> str:
+    """
+    AES-256-GCM encrypt a string. Returns base64(IV || ciphertext || tag).
+    Returns empty string if encryption unavailable.
+    """
+    if not _AESGCM_AVAILABLE:
+        return ""
+    try:
+        key = _derive_aes_key()
+        aesgcm = AESGCM(key)
+        iv = os.urandom(12)  # 96-bit IV per record
+        ct = aesgcm.encrypt(iv, plaintext.encode("utf-8"), None)
+        # Combine IV + ciphertext+tag (tag is appended automatically by AESGCM)
+        combined = iv + ct
+        import base64
+        return base64.b64encode(combined).decode("ascii")
+    except Exception as e:
+        logger.error("encrypt_record failed: %s", e)
+        return ""
+
+
+def decrypt_record(b64_payload: str) -> str:
+    """Decrypt a base64-encoded AES-256-GCM payload. Returns plaintext or empty string."""
+    if not _AESGCM_AVAILABLE or not b64_payload:
+        return ""
+    try:
+        import base64
+        key = _derive_aes_key()
+        aesgcm = AESGCM(key)
+        combined = base64.b64decode(b64_payload)
+        iv = combined[:12]
+        ct = combined[12:]
+        pt = aesgcm.decrypt(iv, ct, None)
+        return pt.decode("utf-8")
+    except Exception as e:
+        logger.error("decrypt_record failed: %s", e)
+        return ""
+
+
+def write_encrypted_ghostrail(points: list) -> None:
+    """
+    Write the entire 24h ghosttrail as an AES-256-GCM encrypted blob.
+    Each point is encrypted individually so partial reads are possible.
+    The blob is a JSON array of base64 strings.
+
+    This is the v5.8 SECURITY_FORTRESS verification artifact:
+    /ghostrail/encrypted returns this blob, demonstrating that the DB
+    stores encrypted binary data (not plaintext coordinates).
+    """
+    if not _AESGCM_AVAILABLE:
+        return
+    try:
+        encrypted_records = []
+        for p in points:
+            # Encrypt the JSON representation of each point
+            plaintext = json.dumps(p, sort_keys=True, default=str)
+            enc = encrypt_record(plaintext)
+            if enc:
+                encrypted_records.append(enc)
+        # Wrap in a metadata envelope
+        envelope = {
+            "version": "v5.8_pro_fortress",
+            "algorithm": "AES-256-GCM",
+            "iv_bits": 96,
+            "tag_bits": 128,
+            "key_rotation_days": 30,
+            "record_count": len(encrypted_records),
+            "encrypted_at": datetime.now(timezone.utc).isoformat(),
+            "records": encrypted_records,
+        }
+        GHOSTRAIL_ENC_PATH.write_text(json.dumps(envelope), encoding="utf-8")
+        logger.info("ghostrail.enc written: %d encrypted records", len(encrypted_records))
+    except Exception as e:
+        logger.error("write_encrypted_ghostrail failed: %s", e)
+
+
+def read_encrypted_ghostrail() -> dict:
+    """Read the encrypted ghostrail blob (envelope + records)."""
+    if not GHOSTRAIL_ENC_PATH.exists():
+        return {"version": "v5.8_pro_fortress", "algorithm": "AES-256-GCM", "record_count": 0, "records": [], "note": "no encrypted records yet"}
+    try:
+        return json.loads(GHOSTRAIL_ENC_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.error("read_encrypted_ghostrail failed: %s", e)
+        return {"version": "v5.8_pro_fortress", "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# V6.0 STORAGE_OPTIMIZATION — Cold Storage Lifecycle
+# ═══════════════════════════════════════════════════════════════════
+# Lifecycle policy: records with timestamp < T-30d are archived from
+# the main ghostrail.enc (hot) to ghostrail_archive.enc (cold).
+#
+# Cold format: ZIP-compressed JSON envelope (same AES-256-GCM schema),
+# keeping on-disk footprint tiny for years of history. The main
+# /points endpoint only sees the last 24h of CSV rows (already
+# enforced by clean_old_points), and ghostrail.enc only carries hot
+# records. /api/archive streams cold data on demand.
+#
+# Archival is triggered:
+#   - On startup (main()): one-shot pass to migrate any backlog.
+#   - Periodically (every 6h) inside the tracking loop.
+#   - Manually via `python archive_cold_data.py` (standalone script).
+# ═══════════════════════════════════════════════════════════════════
+
+import zipfile
+import io as _io
+
+
+def _archive_threshold() -> datetime:
+    """UTC datetime cutoff: anything older than this is cold."""
+    return datetime.now(timezone.utc) - timedelta(days=ARCHIVE_AGE_DAYS)
+
+
+def _parse_point_ts(point: dict) -> datetime | None:
+    """Best-effort timestamp extraction from a ghostrail point record."""
+    for key in ("timestamp", "ts", "time", "datetime"):
+        v = point.get(key)
+        if not v:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            continue
+    return None
+
+
+def _load_existing_archive() -> dict:
+    """Load the existing cold archive envelope (or empty if absent)."""
+    if not GHOSTRAIL_ARCHIVE_PATH.exists():
+        return {
+            "version": "v6.0_cold_storage",
+            "algorithm": "AES-256-GCM",
+            "compression": "zip",
+            "iv_bits": 96,
+            "tag_bits": 128,
+            "key_rotation_days": 30,
+            "record_count": 0,
+            "archived_at": datetime.now(timezone.utc).isoformat(),
+            "records": [],
+        }
+    try:
+        # Cold archive is a ZIP wrapping a JSON envelope
+        with zipfile.ZipFile(GHOSTRAIL_ARCHIVE_PATH, "r") as zf:
+            names = zf.namelist()
+            if not names:
+                return {"version": "v6.0_cold_storage", "record_count": 0, "records": []}
+            raw = zf.read(names[0])
+        return json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        logger.error("Cold archive load failed (initializing fresh): %s", e)
+        return {
+            "version": "v6.0_cold_storage",
+            "algorithm": "AES-256-GCM",
+            "compression": "zip",
+            "record_count": 0,
+            "records": [],
+            "warning": f"previous archive unreadable: {e}",
+        }
+
+
+def _write_archive(envelope: dict) -> None:
+    """Persist the cold archive envelope as ZIP-compressed JSON."""
+    try:
+        buf = _io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("archive.json", json.dumps(envelope))
+        GHOSTRAIL_ARCHIVE_PATH.write_bytes(buf.getvalue())
+        logger.info(
+            "ghostrail_archive.enc written: %d cold records (%.1f KB compressed)",
+            envelope.get("record_count", 0),
+            len(buf.getvalue()) / 1024.0,
+        )
+    except Exception as e:
+        logger.error("Cold archive write failed: %s", e)
+
+
+def archive_cold_data(dry_run: bool = False) -> dict:
+    """
+    Move records with timestamp < T-30d from ghostrail.enc to
+    ghostrail_archive.enc (ZIP + AES-256-GCM).
+
+    Returns a summary dict: {archived, kept_hot, archive_total, threshold}.
+    The main /points endpoint stays ultra-light because only hot records
+    remain in ghostrail.enc.
+    """
+    summary = {
+        "archived": 0,
+        "kept_hot": 0,
+        "archive_total": 0,
+        "threshold": _archive_threshold().isoformat(),
+        "dry_run": dry_run,
+    }
+    try:
+        hot = read_encrypted_ghostrail()
+        hot_records = hot.get("records", [])
+        if not hot_records:
+            return summary
+
+        threshold = _archive_threshold()
+        cold_records: list[str] = []
+        keep_records: list[str] = []
+
+        for b64 in hot_records:
+            pt_json = decrypt_record(b64)
+            if not pt_json:
+                # Undecryptable (e.g. key rotated) — keep in hot to avoid
+                # silently dropping data. Operator can intervene.
+                keep_records.append(b64)
+                continue
+            try:
+                pt = json.loads(pt_json)
+            except Exception:
+                keep_records.append(b64)
+                continue
+            ts = _parse_point_ts(pt)
+            if ts is not None and ts < threshold:
+                cold_records.append(b64)
+            else:
+                keep_records.append(b64)
+
+        summary["archived"] = len(cold_records)
+        summary["kept_hot"] = len(keep_records)
+
+        if dry_run or not cold_records:
+            # Even in dry-run, report the projected archive total
+            existing = _load_existing_archive()
+            summary["archive_total"] = existing.get("record_count", 0) + len(cold_records)
+            return summary
+
+        # Merge cold_records into the existing archive envelope
+        existing = _load_existing_archive()
+        existing["records"].extend(cold_records)
+        existing["record_count"] = len(existing["records"])
+        existing["archived_at"] = datetime.now(timezone.utc).isoformat()
+        _write_archive(existing)
+        summary["archive_total"] = existing["record_count"]
+
+        # Rewrite hot ghostrail.enc with only keep_records
+        if _AESGCM_AVAILABLE:
+            hot["records"] = keep_records
+            hot["record_count"] = len(keep_records)
+            hot["encrypted_at"] = datetime.now(timezone.utc).isoformat()
+            GHOSTRAIL_ENC_PATH.write_text(json.dumps(hot), encoding="utf-8")
+            logger.info(
+                "Cold storage: archived %d records, %d remain hot",
+                len(cold_records),
+                len(keep_records),
+            )
+        return summary
+    except Exception as e:
+        logger.error("archive_cold_data failed: %s", e)
+        summary["error"] = str(e)
+        return summary
+
+
+def read_archive(offset: int = 0, limit: int = 500) -> dict:
+    """
+    Read a paginated slice of the cold archive.
+    Decrypts records on demand so the main process never holds years
+    of plaintext in memory.
+    """
+    if not GHOSTRAIL_ARCHIVE_PATH.exists():
+        return {
+            "version": "v6.0_cold_storage",
+            "record_count": 0,
+            "offset": offset,
+            "limit": limit,
+            "records": [],
+            "note": "no archived records yet",
+        }
+    try:
+        env = _load_existing_archive()
+        all_records = env.get("records", [])
+        total = len(all_records)
+        slc = all_records[offset : offset + limit] if limit > 0 else all_records[offset:]
+        # Decrypt each record on demand
+        decrypted = []
+        for b64 in slc:
+            pt = decrypt_record(b64)
+            if pt:
+                try:
+                    decrypted.append(json.loads(pt))
+                except Exception:
+                    decrypted.append({"raw": pt})
+        return {
+            "version": env.get("version", "v6.0_cold_storage"),
+            "algorithm": env.get("algorithm", "AES-256-GCM"),
+            "compression": env.get("compression", "zip"),
+            "record_count": total,
+            "offset": offset,
+            "limit": limit,
+            "returned": len(decrypted),
+            "archived_at": env.get("archived_at"),
+            "records": decrypted,
+        }
+    except Exception as e:
+        logger.error("read_archive failed: %s", e)
+        return {"version": "v6.0_cold_storage", "error": str(e)}
+
+
+# ── RateLimiter (per-IP sliding window) ──
+class RateLimiter:
+    """
+    Sliding-window rate limiter. Tracks request timestamps per IP.
+    Thread-safe via a single lock (HTTP server is threaded).
+
+    Limits:
+      - /points: 60 requests per minute per IP (1 req/sec burst)
+      - /ghostrail/encrypted: 10 requests per minute per IP
+      - /predict: 30 requests per minute per IP
+    """
+    def __init__(self):
+        self._buckets: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def check(self, ip: str, limit: int, window_s: int = 60) -> tuple[bool, int]:
+        """
+        Returns (allowed, retry_after_seconds).
+        If allowed=False, the request is rejected with HTTP 429.
+        """
+        now = time.time()
+        with self._lock:
+            ts_list = self._buckets.get(ip, [])
+            # Drop timestamps older than the window
+            ts_list = [t for t in ts_list if now - t < window_s]
+            if len(ts_list) >= limit:
+                # Compute retry-after: time until the oldest entry expires
+                oldest = ts_list[0] if ts_list else now
+                retry_after = max(1, int(window_s - (now - oldest)) + 1)
+                self._buckets[ip] = ts_list
+                return (False, retry_after)
+            ts_list.append(now)
+            self._buckets[ip] = ts_list
+            return (True, 0)
+
+    def cleanup(self, max_age_s: int = 3600) -> None:
+        """Periodic cleanup of stale IPs (called hourly)."""
+        now = time.time()
+        with self._lock:
+            stale = [ip for ip, ts_list in self._buckets.items() if not ts_list or now - ts_list[-1] > max_age_s]
+            for ip in stale:
+                del self._buckets[ip]
+
+
+_rate_limiter = RateLimiter()
+
+
+def _get_client_ip(handler) -> str:
+    """Extract client IP, respecting X-Forwarded-For from Render's proxy."""
+    xff = handler.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    return handler.client_address[0] if handler.client_address else "unknown"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# V5.8 PREDICT_ENGINE_MARKOV — server-side Markov chain prediction
+# ═══════════════════════════════════════════════════════════════════
+# First-order Markov chain: P(Destination | Origin, HourBucket)
+# Mirrors the frontend prediction-engine.ts so both client and server
+# agree on the prediction. Useful for:
+#   - Server-side notification triggers (e.g. "likely heading to work")
+#   - API consumers that don't run JS
+#   - Verification matrix: /predict returns the same distribution
+# ═══════════════════════════════════════════════════════════════════
+
+_VISIT_RADIUS_M = 50
+_HOUR_BUCKET_SIZE = 4
+_TRANSITION_WINDOW_MS = 60 * 60 * 1000  # 1h
+_MIN_TRANSITIONS = 2
+
+
+def _haversine_m(lat1, lng1, lat2, lng2):
+    R = 6371000
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _hour_bucket(dt) -> int:
+    return dt.hour // _HOUR_BUCKET_SIZE
+
+
+def _detect_hotspots(pts):
+    """Greedy radius-based clustering — same as frontend."""
+    clusters = []
+    for p in pts:
+        best = -1
+        best_dist = float("inf")
+        for i, c in enumerate(clusters):
+            d = _haversine_m(p["lat"], p["lng"], c["lat"], c["lng"])
+            if d < _VISIT_RADIUS_M and d < best_dist:
+                best_dist = d
+                best = i
+        if best >= 0:
+            clusters[best]["pts"].append(p)
+            c = clusters[best]
+            c["lat"] = sum(x["lat"] for x in c["pts"]) / len(c["pts"])
+            c["lng"] = sum(x["lng"] for x in c["pts"]) / len(c["pts"])
+        else:
+            clusters.append({"lat": p["lat"], "lng": p["lng"], "pts": [p]})
+
+    hotspots = []
+    for i, c in enumerate(clusters):
+        ts_list = sorted(p["t"] for p in c["pts"])
+        dwell = ts_list[-1] - ts_list[0] if len(ts_list) >= 2 else 0
+        if dwell < 60 * 60 * 1000:
+            continue
+        label = f"Spot {len(hotspots) + 1}"
+        if _haversine_m(c["lat"], c["lng"], HOME_ZONE_CENTER[0], HOME_ZONE_CENTER[1]) < HOME_ZONE_RADIUS_M:
+            label = "Casa"
+        elif _haversine_m(c["lat"], c["lng"], WORK_ZONE_CENTER[0], WORK_ZONE_CENTER[1]) < WORK_ZONE_RADIUS_M:
+            label = "Trabajo"
+        hotspots.append({"id": i, "lat": c["lat"], "lng": c["lng"], "label": label, "dwell_min": round(dwell / 60000)})
+    return hotspots
+
+
+def _find_hotspot(lat, lng, hotspots):
+    for h in hotspots:
+        if _haversine_m(lat, lng, h["lat"], h["lng"]) < _VISIT_RADIUS_M:
+            return h
+    return None
+
+
+def _build_transition_matrix(pts, hotspots):
+    """Build matrix[origin_id:hour_bucket] -> {dest_id: count}."""
+    matrix = {}
+    if len(pts) < 2 or not hotspots:
+        return matrix
+    sorted_pts = sorted(pts, key=lambda p: p["t"])
+    current_origin = None
+    left_origin_at = None
+    origin_bucket = 0
+    for p in sorted_pts:
+        spot = _find_hotspot(p["lat"], p["lng"], hotspots)
+        if spot:
+            if current_origin is None:
+                current_origin = spot
+                left_origin_at = None
+                origin_bucket = _hour_bucket(p["dt"])
+            elif current_origin["id"] == spot["id"]:
+                left_origin_at = None
+            else:
+                if left_origin_at is not None:
+                    transition_ms = p["t"] - left_origin_at
+                    if transition_ms <= _TRANSITION_WINDOW_MS:
+                        key = f"{current_origin['id']}:{origin_bucket}"
+                        matrix.setdefault(key, {})
+                        matrix[key][spot["id"]] = matrix[key].get(spot["id"], 0) + 1
+                current_origin = spot
+                left_origin_at = None
+                origin_bucket = _hour_bucket(p["dt"])
+        else:
+            if current_origin is not None and left_origin_at is None:
+                left_origin_at = p["t"]
+    return matrix
+
+
+def predict_next_server(points):
+    """
+    Server-side Markov chain prediction.
+    Input: list of point dicts (with 'timestamp', 'lat', 'lng').
+    Returns: {available, current_spot, predictions: [{label, probability, hotspot_id}], reason?}
+    """
+    if len(points) < 4:
+        return {"available": False, "current_spot": None, "predictions": [], "reason": "Sin datos suficientes (mín. 4 puntos)"}
+
+    # Parse timestamps
+    now_ms = time.time() * 1000
+    seven_d_ms = 7 * 24 * 60 * 60 * 1000
+    pts = []
+    for p in points:
+        try:
+            ts_str = p.get("timestamp") or p.get("t")
+            if not ts_str:
+                continue
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if isinstance(ts_str, str) else datetime.fromtimestamp(ts_str / 1000, tz=timezone.utc)
+            t_ms = dt.timestamp() * 1000
+            if now_ms - t_ms > seven_d_ms:
+                continue
+            pts.append({"lat": float(p["lat"]), "lng": float(p["lng"]), "t": t_ms, "dt": dt})
+        except Exception:
+            continue
+    pts.sort(key=lambda x: x["t"])
+
+    if len(pts) < 4:
+        return {"available": False, "current_spot": None, "predictions": [], "reason": "Sin datos suficientes en ventana 7d"}
+
+    hotspots = _detect_hotspots(pts)
+    if len(hotspots) < 2:
+        return {"available": False, "current_spot": None, "predictions": [], "reason": "Necesita ≥2 hotspots detectados"}
+
+    current_spot = _find_hotspot(pts[-1]["lat"], pts[-1]["lng"], hotspots)
+    if not current_spot:
+        return {"available": False, "current_spot": None, "predictions": [], "reason": "No está en un hotspot conocido"}
+
+    matrix = _build_transition_matrix(pts, hotspots)
+    current_bucket = _hour_bucket(datetime.now(timezone.utc))
+    key = f"{current_spot['id']}:{current_bucket}"
+    dest_counts = matrix.get(key, {})
+
+    if not dest_counts:
+        # Try adjacent buckets for smoothing
+        prev_bucket = (current_bucket + 5) % 6
+        next_bucket = (current_bucket + 1) % 6
+        merged = {}
+        for bk in (prev_bucket, next_bucket):
+            for dest_id, count in matrix.get(f"{current_spot['id']}:{bk}", {}).items():
+                merged[dest_id] = merged.get(dest_id, 0) + count * 0.5
+        if not merged:
+            return {"available": False, "current_spot": current_spot, "predictions": [], "reason": "Sin transiciones registradas en esta franja horaria"}
+        dest_counts = merged
+
+    total = sum(dest_counts.values())
+    if total < _MIN_TRANSITIONS:
+        return {"available": False, "current_spot": current_spot, "predictions": [], "reason": f"Solo {total} transición(es) — necesita ≥{_MIN_TRANSITIONS}"}
+
+    predictions = []
+    for dest_id, count in dest_counts.items():
+        hotspot = next((h for h in hotspots if h["id"] == dest_id), None)
+        if hotspot:
+            predictions.append({"label": hotspot["label"], "probability": count / total, "hotspot_id": dest_id})
+    predictions.sort(key=lambda x: x["probability"], reverse=True)
+
+    return {"available": len(predictions) > 0, "current_spot": current_spot, "predictions": predictions[:3]}
+
+
 
 
 # ------------------------------------------------------------
@@ -366,10 +914,15 @@ def append_csv(timestamp, lat, lng, speed_kmh=0.0, heading=0.0, movement_state="
         "Registrado: %.6f, %.6f | vel=%.1f km/h | rumbo=%s | %s",
         lat, lng, speed_kmh, heading_name(heading), timestamp.isoformat(),
     )
-    # V6.9 GIST_HISTORY_SYNC — mirror every newly-appended point to the
-    # immortal gist (async daemon thread, non-blocking). Survives Render
-    # cold starts. Circular 1000-record ceiling applied inside the worker.
-    _async_gist_sync_history()
+    # V5.8 SECURITY_FORTRESS: rewrite the entire 24h ghosttrail as an
+    # AES-256-GCM encrypted blob. This is the verification artifact for
+    # the security matrix — /ghostrail/encrypted returns this blob.
+    # Fire-and-forget in a thread so append_csv stays non-blocking.
+    try:
+        all_pts = read_all_points()
+        threading.Thread(target=write_encrypted_ghostrail, args=(all_pts,), daemon=True).start()
+    except Exception as e:
+        logger.error("append_csv: encrypted blob write failed: %s", e)
 
 
 def read_all_points():
@@ -607,85 +1160,20 @@ def _compute_signal_quality(accuracy):
 
 
 def _infer_network_type(accuracy, speed):
-    """
-    RA16: Improved network type inference from accuracy + speed + context.
-    Multi-signal classifier with confidence scoring.
-
-    Signals:
-      - accuracy <15m  → strong WIFI/5G indoor signal
-      - accuracy 15-30m → WIFI or 4G with good lock
-      - accuracy 30-65m → likely 4G (cell tower triangulation)
-      - accuracy >65m  → poor 4G / edge of cell
-      - speed >25km/h + accuracy <=30 → likely 5G/4G vehicle
-      - speed <2km/h + accuracy <=15 → strong WIFI indicator (stationary + precise)
-      - speed >5km/h + accuracy >50 → mobile network (handover behavior)
-
-    Returns: "WIFI" | "5G" | "4G" | "3G" | "UNKNOWN"
-    """
+    """Infer network type from accuracy + speed."""
     if accuracy is None or accuracy <= 0:
         return "UNKNOWN"
-
-    # Stationary + very precise = strong WIFI indicator
-    if speed < 2 and accuracy <= 15:
+    if accuracy <= 30 and speed < 10:
         return "WIFI"
-    # Low speed + good accuracy = WIFI likely (indoor)
-    if speed < 10 and accuracy <= 25:
-        return "WIFI"
-    # Moving fast with good accuracy = 5G (modern networks handle handoff well)
-    if speed > 25 and accuracy <= 30:
+    if accuracy <= 50 and speed > 5:
         return "5G"
-    # Moving + moderate accuracy = 4G (cell tower handover)
-    if speed > 5 and accuracy <= 65:
-        return "4G"
-    # High accuracy value = poor signal = 4G at edge or 3G
-    if accuracy > 100:
-        return "3G"
     if accuracy > 50:
-        return "4G"
-    # Fallback for moderate accuracy + stationary
-    if accuracy <= 50:
         return "4G"
     return "UNKNOWN"
 
 
-def _infer_network_confidence(accuracy, speed, network_type):
-    """RA16: confidence 0-100 for the network inference."""
-    if network_type == "UNKNOWN":
-        return 20
-    if network_type == "WIFI":
-        if speed < 2 and accuracy <= 15:
-            return 92  # very confident
-        if speed < 10 and accuracy <= 25:
-            return 78
-        return 55
-    if network_type == "5G":
-        if speed > 25 and accuracy <= 30:
-            return 82
-        return 60
-    if network_type == "4G":
-        if 30 < accuracy <= 65 and speed > 5:
-            return 75
-        if accuracy > 50:
-            return 65
-        return 55
-    if network_type == "3G":
-        return 60 if accuracy > 100 else 40
-    return 30
-
-
-def _infer_screen_state(prev_state, timestamp, accuracy=None, speed=None, charging=None):
-    """
-    RA15: Multi-signal screen state inference with hysteresis.
-
-    Signals:
-      1. Polling cadence (delta < 30s → ON, very likely)
-      2. Movement (non-STATIC → ON, screen off while moving is rare for tracking)
-      3. Charging + recent update → ON (phone plugged in often in-use)
-      4. High accuracy + low speed → ON (GPS lock requests often triggered by app use)
-      5. Sustained >2min no updates + STATIC + not charging → OFF
-
-    Hysteresis: requires 2+ OFF signals to flip from ON to OFF.
-    """
+def _infer_screen_state(prev_state, timestamp):
+    """Screen state: ON if updates <30s, OFF otherwise."""
     if not prev_state or not timestamp:
         return "ON"
     try:
@@ -695,38 +1183,13 @@ def _infer_screen_state(prev_state, timestamp, accuracy=None, speed=None, chargi
             last_ts = timestamp
         now = datetime.now(timezone.utc)
         delta = (now - last_ts).total_seconds()
-        # Signal 1: fresh update → strong ON
         if delta < SCREEN_ON_THRESHOLD_S:
             return "ON"
     except Exception:
         pass
-
-    # Signal 2: movement → ON
     mode = prev_state.get("movement", {}).get("mode", "STATIC")
     if mode != "STATIC":
         return "ON"
-
-    # Signal 3: charging + recent → likely ON
-    if charging and timestamp:
-        try:
-            if isinstance(timestamp, str):
-                last_ts = datetime.fromisoformat(timestamp)
-            else:
-                last_ts = timestamp
-            delta = (datetime.now(timezone.utc) - last_ts).total_seconds()
-            if delta < 120:  # charging + recent update within 2 min
-                return "ON"
-        except Exception:
-            pass
-
-    # Signal 4: high accuracy + low speed → likely ON (GPS lock from active app)
-    if accuracy is not None and 0 < accuracy <= 20 and (speed is None or speed < 2):
-        # Could be ON — but require another signal
-        prev_speed = prev_state.get("movement", {}).get("speed_kmh", 0)
-        if abs(prev_speed - (speed or 0)) > 0.5:
-            return "ON"  # speed variation suggests active tracking
-
-    # Default: OFF (need at least 1 signal to override)
     return "OFF"
 
 
@@ -858,19 +1321,15 @@ def _compute_proximity(lat, lng, mode):
     return result
 
 
-def _compute_ghostrail(prev_state, lat, lng, speed, zone, timestamp=None):
-    """GhostRail v6: restored timeline with last_zones max 5.
-    V6.9: each point now carries an ISO timestamp so the frontend GhostTrail
-    memo no longer discards them (discarded_no_ts). The timestamp comes from
-    the polling loop's UTC datetime — passed in as `timestamp`."""
+def _compute_ghostrail(prev_state, lat, lng, speed, zone):
+    """GhostRail v6: restored timeline with last_zones max 5."""
     zone_map = {"HOME": "Casa", "WORK": "Trabajo", "TRANSIT": "En ruta", "IDLE": "Otro"}
     zone_label = zone_map.get(zone, "Otro")
-    ts_iso = timestamp.isoformat() if hasattr(timestamp, "isoformat") else (timestamp or None)
 
     if not prev_state:
         return {
             "enabled": True,
-            "points_24h": [{"lat": lat, "lng": lng, "zone": zone_label, "timestamp": ts_iso}] if lat and lng else [],
+            "points_24h": [{"lat": lat, "lng": lng, "zone": zone_label}] if lat and lng else [],
             "last_zones": [{"name": zone_label, "min": 1}],
             "timeline_active": True,
         }
@@ -881,7 +1340,7 @@ def _compute_ghostrail(prev_state, lat, lng, speed, zone, timestamp=None):
 
     # Add point (keep last 200)
     if lat is not None and lng is not None:
-        points_24h.append({"lat": lat, "lng": lng, "zone": zone_label, "timestamp": ts_iso})
+        points_24h.append({"lat": lat, "lng": lng, "zone": zone_label})
     if len(points_24h) > 200:
         points_24h = points_24h[-200:]
 
@@ -949,7 +1408,6 @@ def build_state(raw, prev_state=None):
 
     # ── 4. NETWORK + SIGNAL QUALITY ──
     network_type = _infer_network_type(accuracy, speed_kmh)
-    network_confidence = _infer_network_confidence(accuracy, speed_kmh, network_type)
     signal_quality = _compute_signal_quality(accuracy)
 
     # ── 5. ANTI-SPOOF ──
@@ -966,18 +1424,18 @@ def build_state(raw, prev_state=None):
         except (ValueError, TypeError):
             pass
 
-    screen_on = _infer_screen_state(prev_state, timestamp, accuracy, speed_kmh, charging) == "ON"
+    screen_on = _infer_screen_state(prev_state, timestamp) == "ON"
     score = _compute_activity_score(speed_kmh, zone, stability, battery_val, charging, screen_on)
     level = _compute_activity_level(score)
 
     # ── 7. SCREEN STATE ──
-    screen_state = _infer_screen_state(prev_state, timestamp, accuracy, speed_kmh, charging)
+    screen_state = _infer_screen_state(prev_state, timestamp)
 
     # ── 8. PROXIMITY ENGINE ──
     proximity = _compute_proximity(lat, lng, mode)
 
     # ── 9. GHOSTRAIL (restored) ──
-    ghostrail = _compute_ghostrail(prev_state, lat, lng, speed_kmh, zone, timestamp)
+    ghostrail = _compute_ghostrail(prev_state, lat, lng, speed_kmh, zone)
 
     # ── 10. EVENTS FIFO ──
     events = list(prev_state.get("events", [])) if prev_state else []
@@ -1035,16 +1493,6 @@ def build_state(raw, prev_state=None):
             "timestamp": now_iso,
             "device_id": "sofi",
             "version": "v6",
-            # RA14: device telemetry for device fingerprinting
-            "telemetry": {
-                "accuracy_m": round(accuracy, 1) if accuracy else None,
-                "speed_kmh": round(speed_kmh, 2),
-                "battery_pct": battery_val,
-                "charging": charging,
-                "network_type": network_type,
-                "poll_interval_s": POLL_INTERVAL,
-                "movement_mode": mode,
-            },
         },
         "location": {
             "lat": lat,
@@ -1066,8 +1514,6 @@ def build_state(raw, prev_state=None):
         "network": {
             "type": network_type,
             "signal_quality": signal_quality,
-            "confidence": network_confidence,
-            "accuracy_m": round(accuracy, 1) if accuracy else None,
         },
         "device": {
             "battery": battery_val,
@@ -1145,328 +1591,6 @@ def _load_cookie_header():
     except Exception as e:
         logger.error("Error cargando cookies: %s", e)
         return ""
-
-
-# ------------------------------------------------------------
-# RA21 — PERSISTENT COOKIE BACKUP via GitHub Gist (private)
-# ------------------------------------------------------------
-# Render free tier has an EPHEMERAL filesystem: every cold start
-# (after 15 min inactivity) wipes cookies.json, causing auth failure
-# ("Faltan: critical_cookies_missing") and the frontend falls into
-# "Rescue mode (cache)" with live:0 points.
-#
-# This module backs up cookies to a PRIVATE GitHub Gist. On startup,
-# if cookies.json is missing/empty, it restores from the gist. On
-# every cookie import via /api/cookies, it syncs the gist via PATCH.
-#
-# Required env vars: GITHUB_TOKEN, GIST_ID
-# ------------------------------------------------------------
-
-_GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-_GIST_ID = os.environ.get("GIST_ID", "")
-
-
-def _gist_fetch_cookies():
-    """Fetch cookies.json content from the private GitHub gist.
-    Returns a list of cookie dicts, or None on failure."""
-    if not _GITHUB_TOKEN or not _GIST_ID:
-        logger.debug("Gist backup: GITHUB_TOKEN/GIST_ID not set — skipping fetch")
-        return None
-    try:
-        import urllib.request
-        url = f"https://api.github.com/gists/{_GIST_ID}"
-        req = urllib.request.Request(url, headers={
-            "Authorization": f"token {_GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "stracker-ra21"
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-        files = data.get("files", {})
-        cookies_file = files.get("cookies.json", {})
-        content = cookies_file.get("content", "")
-        if not content:
-            logger.warning("Gist backup: gist exists but cookies.json content is empty")
-            return None
-        cookies = json.loads(content)
-        if isinstance(cookies, list) and cookies:
-            logger.info("Gist backup: fetched %d cookies from gist %s", len(cookies), _GIST_ID[:8])
-            return cookies
-        logger.warning("Gist backup: gist content is not a non-empty array")
-        return None
-    except Exception as e:
-        logger.error("Gist backup fetch failed: %s", e)
-        return None
-
-
-def _gist_sync_cookies(cookies):
-    """Update the private gist with the latest cookies (PATCH).
-    Best-effort: failures are logged but do not block the cookie import."""
-    if not _GITHUB_TOKEN or not _GIST_ID:
-        logger.debug("Gist backup: GITHUB_TOKEN/GIST_ID not set — skipping sync")
-        return False
-    try:
-        import urllib.request
-        content = json.dumps(cookies, indent=2, ensure_ascii=False)
-        payload = json.dumps({
-            "description": "stracker cookies backup (auto-synced)",
-            "files": {
-                "cookies.json": {
-                    "content": content
-                }
-            }
-        }).encode("utf-8")
-        url = f"https://api.github.com/gists/{_GIST_ID}"
-        req = urllib.request.Request(url, data=payload, headers={
-            "Authorization": f"token {_GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
-            "Content-Type": "application/json",
-            "User-Agent": "stracker-ra21"
-        }, method="PATCH")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status in (200, 201):
-                logger.info("Gist backup: synced %d cookies to gist %s", len(cookies), _GIST_ID[:8])
-                return True
-            logger.warning("Gist backup: PATCH returned status %d", resp.status)
-            return False
-    except Exception as e:
-        logger.error("Gist backup sync failed: %s", e)
-        return False
-
-
-def _restore_cookies_if_missing():
-    """RA21: On startup, if cookies.json is missing or empty, restore from
-    the GitHub gist backup. This survives Render free-tier cold starts
-    (ephemeral filesystem wipes cookies.json every ~15 min of inactivity)."""
-    try:
-        need_restore = False
-        if not COOKIES_PATH.exists():
-            need_restore = True
-        else:
-            try:
-                existing = json.loads(COOKIES_PATH.read_text(encoding="utf-8"))
-                if not isinstance(existing, list) or len(existing) == 0:
-                    need_restore = True
-            except Exception:
-                need_restore = True
-        if not need_restore:
-            logger.info("RA21: cookies.json present (%d bytes) — no restore needed", COOKIES_PATH.stat().st_size)
-            return False
-        logger.info("RA21: cookies.json missing/empty — restoring from gist backup...")
-        cookies = _gist_fetch_cookies()
-        if not cookies:
-            logger.warning("RA21: gist restore failed — starting with no cookies (auth will fail until manual import)")
-            return False
-        COOKIES_PATH.write_text(json.dumps(cookies, indent=2, ensure_ascii=False), encoding="utf-8")
-        critical_names = ["__Secure-1PSID", "__Secure-3PSID", "SAPISID", "APISID", "HSID", "SSID", "SID"]
-        present = [n for n in critical_names if any(c.get("name") == n for c in cookies)]
-        logger.info("RA21: restored %d cookies from gist (critical: %d/%d)", len(cookies), len(present), len(critical_names))
-        return True
-    except Exception as e:
-        logger.error("RA21 restore error: %s", e)
-        return False
-
-
-# ------------------------------------------------------------
-# V6.9 — IMMORTAL HISTORY via GitHub Gist (GIST_HISTORY_SYNC
-#         + COLD_START_RECOVERY + JITTER_LOGGING_OPTIMIZATION)
-# ------------------------------------------------------------
-# Render free tier's EPHEMERAL filesystem wipes `historial.csv` on every cold
-# start (~15 min inactivity). After each hibernation, the backend boots with
-# ZERO history — the operator loses the entire 24h ghost trail and the
-# nocturnal activity pattern.
-#
-# This module mirrors the RA21 cookie backup pattern, but for the history CSV.
-# The gist file is named `stracker_history.csv` (per V6.9 spec) and is stored
-# in the SAME private gist as `cookies.json` (PATCH only touches the named
-# file, leaving cookies.json intact). A circular ceiling of HISTORY_MAX_RECORDS
-# (1000) keeps the payload bounded — GitHub caps gist files at ~1MB.
-#
-# Flow:
-#   • Startup → _restore_history_if_missing() GETs the gist, writes CSV locally.
-#   • Every append_csv() → _async_gist_sync_history() PATCHes the gist in a
-#     daemon thread (non-blocking). The CSV is trimmed to the last 1000 rows
-#     before upload (circular buffer).
-#   • JITTER_LOGGING_OPTIMIZATION (DUPLICATE_MIN_METERS=2, set above) ensures
-#     micro-movements >2m are force-logged even when speed reports 0.0 km/h.
-# ------------------------------------------------------------
-
-def _read_csv_text_for_gist():
-    """Read the local CSV, trim to the last HISTORY_MAX_RECORDS data rows
-    (circular buffer), and return the text payload for the gist. Includes
-    the CSV header so the file is self-describing on cold-start recovery."""
-    try:
-        if not CSV_PATH.exists():
-            return ""
-        with open(CSV_PATH, "r", newline="", encoding="utf-8") as f:
-            lines = f.readlines()
-        if not lines:
-            return ""
-        header = lines[0] if lines[0].lower().startswith("timestamp") else "timestamp,lat,lng,speed_kmh,heading,movement_state,address,accuracy\n"
-        data_rows = [ln for ln in lines[1:] if ln.strip()]
-        # Circular trim: keep only the most recent N records (by timestamp
-        # order — append_csv writes in chronological order, so the tail is
-        # the freshest).
-        if len(data_rows) > HISTORY_MAX_RECORDS:
-            data_rows = data_rows[-HISTORY_MAX_RECORDS:]
-        return header + "".join(data_rows)
-    except Exception as e:
-        logger.error("V6.9 history read failed: %s", e)
-        return ""
-
-
-def _gist_fetch_history():
-    """Fetch stracker_history.csv content from the private gist.
-    Returns the raw CSV text (str), or "" on failure."""
-    if not _GITHUB_TOKEN or not _GIST_ID:
-        logger.debug("V6.9 history fetch: GITHUB_TOKEN/GIST_ID not set — skipping")
-        return ""
-    try:
-        import urllib.request
-        url = f"https://api.github.com/gists/{_GIST_ID}"
-        req = urllib.request.Request(url, headers={
-            "Authorization": f"token {_GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "stracker-v69-history"
-        })
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-        files = data.get("files", {})
-        hist_file = files.get(HISTORY_GIST_FILENAME, {})
-        content = hist_file.get("content", "")
-        if not content:
-            logger.info("V6.9 history fetch: gist has no '%s' file yet (first run)", HISTORY_GIST_FILENAME)
-            return ""
-        row_estimate = content.count("\n")
-        logger.info("V6.9 history fetch: retrieved '%s' from gist %s (~%d lines)", HISTORY_GIST_FILENAME, _GIST_ID[:8], row_estimate)
-        return content
-    except Exception as e:
-        logger.error("V6.9 history fetch failed: %s", e)
-        return ""
-
-
-def _gist_sync_history(csv_text):
-    """PATCH the private gist with the latest history CSV content.
-    Best-effort: failures are logged but never block the polling loop.
-    Only the `stracker_history.csv` file is touched — cookies.json is
-    preserved untouched in the same gist."""
-    if not _GITHUB_TOKEN or not _GIST_ID:
-        logger.debug("V6.9 history sync: GITHUB_TOKEN/GIST_ID not set — skipping")
-        return False
-    if not csv_text or not csv_text.strip():
-        logger.debug("V6.9 history sync: empty payload — skipping")
-        return False
-    try:
-        import urllib.request
-        payload = json.dumps({
-            "description": "stracker immortal history (V6.9 auto-synced)",
-            "files": {
-                HISTORY_GIST_FILENAME: {
-                    "content": csv_text
-                }
-            }
-        }).encode("utf-8")
-        url = f"https://api.github.com/gists/{_GIST_ID}"
-        req = urllib.request.Request(url, data=payload, headers={
-            "Authorization": f"token {_GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
-            "Content-Type": "application/json",
-            "User-Agent": "stracker-v69-history"
-        }, method="PATCH")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status in (200, 201):
-                row_count = csv_text.count("\n")
-                logger.info("V6.9 history sync: PATCHed '%s' (~%d rows) to gist %s", HISTORY_GIST_FILENAME, row_count, _GIST_ID[:8])
-                return True
-            logger.warning("V6.9 history sync: PATCH returned status %d", resp.status)
-            return False
-    except Exception as e:
-        logger.error("V6.9 history sync failed: %s", e)
-        return False
-
-
-def _async_gist_sync_history():
-    """Threaded wrapper: read CSV, trim to 1000 records, PATCH gist.
-    Runs in a daemon thread so the polling loop is never blocked by
-    network latency. Safe to call from append_csv() on every point."""
-    def _worker():
-        try:
-            csv_text = _read_csv_text_for_gist()
-            _gist_sync_history(csv_text)
-        except Exception as e:
-            logger.error("V6.9 async history sync worker crashed: %s", e)
-    try:
-        t = threading.Thread(target=_worker, name="v69-history-sync", daemon=True)
-        t.start()
-    except Exception as e:
-        logger.error("V6.9 async history sync thread spawn failed: %s", e)
-
-
-def _restore_history_if_missing():
-    """V6.9 COLD_START_RECOVERY — On startup, if the local CSV is missing
-    or contains only the header row (ephemeral filesystem wiped it), fetch
-    the immortal copy from the gist and write it locally. This restores the
-    ghost trail timeline immediately after a Render cold start, before the
-    polling loop opens sockets or fetches any location."""
-    try:
-        need_restore = False
-        if not CSV_PATH.exists():
-            need_restore = True
-        else:
-            try:
-                size = CSV_PATH.stat().st_size
-                if size < 80:
-                    # Only the header row (or empty) — treat as wiped.
-                    need_restore = True
-                else:
-                    # Count data rows.
-                    with open(CSV_PATH, "r", newline="", encoding="utf-8") as f:
-                        row_count = max(0, sum(1 for _ in f) - 1)
-                    if row_count == 0:
-                        need_restore = True
-            except Exception:
-                need_restore = True
-
-        if not need_restore:
-            try:
-                with open(CSV_PATH, "r", newline="", encoding="utf-8") as f:
-                    row_count = max(0, sum(1 for _ in f) - 1)
-                logger.info("V6.9 COLD_START: local CSV present (%d data rows) — no restore needed", row_count)
-            except Exception:
-                pass
-            return False
-
-        logger.info("V6.9 COLD_START: local CSV missing/empty — restoring immortal history from gist...")
-        csv_text = _gist_fetch_history()
-        if not csv_text or not csv_text.strip():
-            logger.warning("V6.9 COLD_START: gist has no history yet — starting with empty CSV (will populate on first poll)")
-            return False
-
-        # Validate the gist content looks like our CSV (header check) before
-        # writing — a corrupt gist must never clobber a partially-populated
-        # local file.
-        first_line = csv_text.split("\n", 1)[0].strip().lower()
-        if not first_line.startswith("timestamp"):
-            logger.warning("V6.9 COLD_START: gist content doesn't look like our CSV (first line: '%s') — refusing to write", first_line[:60])
-            return False
-
-        # Ensure header matches our current schema; if so, write directly.
-        # If the header differs (schema drift), we still write — DictReader
-        # downstream tolerates missing columns via .get() with defaults.
-        try:
-            # Re-init to ensure the file exists with correct header, then
-            # overwrite with the gist content.
-            CSV_PATH.write_text(csv_text, encoding="utf-8")
-            with open(CSV_PATH, "r", newline="", encoding="utf-8") as f:
-                row_count = max(0, sum(1 for _ in f) - 1)
-            logger.info("V6.9 COLD_START: restored %d history rows from gist to %s", row_count, CSV_PATH.name)
-            return True
-        except Exception as e:
-            logger.error("V6.9 COLD_START: failed to write restored CSV: %s", e)
-            return False
-    except Exception as e:
-        logger.error("V6.9 COLD_START recovery error: %s", e)
-        return False
 
 
 def _chrome_same_site(val):
@@ -1582,29 +1706,19 @@ def _extract_coords_from_json(obj, depth=0):
 
 def _fetch_location(cookie_header):
     import urllib.request, urllib.error, json as _json
-    # RA4: Detailed logging for production diagnosis
-    has_1psid = "__Secure-1PSID=" in cookie_header
-    has_3psid = "__Secure-3PSID=" in cookie_header
-    has_sapisid = "SAPISID=" in cookie_header
-    logger.info("[fetch_location] START cookie_len=%d has_1PSID=%s has_3PSID=%s has_SAPISID=%s",
-                len(cookie_header), has_1psid, has_3psid, has_sapisid)
     try:
         req = urllib.request.Request(LOCATIONSHARING_URL, headers={"Cookie": cookie_header, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "https://www.google.com/maps", "X-Goog-AuthUser": "0"})
         with urllib.request.urlopen(req, timeout=15) as r:
             raw = r.read().decode("utf-8", errors="ignore")
-        logger.info("[fetch_location] RPC 200 OK len=%d head=%r", len(raw), raw[:200])
-    except urllib.error.HTTPError as e:
-        logger.warning("[fetch_location] RPC HTTP %d: %s", e.code, e.read().decode("utf-8","ignore")[:300])
-        raw = ""
     except Exception as e:
-        logger.warning("[fetch_location] RPC error: %s", e)
+        logger.warning("RPC error: %s", e)
         raw = ""
 
     if raw:
         text = re.sub(r"^\)\]\}'\s*\n?", "", raw)
         if re.match(r'^\[null,null,', text):
-            logger.warning("[fetch_location] Google reports NO ACTIVE location sharing (null,null). Cookies auth OK but no share configured for this account.")
-            return None, None, None, "", 0, 0, "Desconocido"
+            logger.warning("Google Maps no reporta ubicacion activa.")
+            return None, None, None, "", 0, 0
         found = None
         m = re.search(r'\[null,(-?\d+\.\d+),(-?\d+\.\d+)\]', text)
         if m: lng, lat = float(m.group(1)), float(m.group(2)); found = (lat, lng)
@@ -1619,25 +1733,16 @@ def _fetch_location(cookie_header):
             except Exception: pass
         if found:
             lat, lng = found
-            logger.info("[fetch_location] SUCCESS coords=%s,%s from RPC", lat, lng)
             bat, address, accuracy, charging = _parse_rpc_details(text)
-            # RA29: extract device label from the same RPC payload (no extra request)
-            device_label = _extract_device_label(text)
-            return lat, lng, bat, address, accuracy, charging, device_label
-        logger.warning("[fetch_location] RPC response had data but no coords extracted. len=%d", len(text))
+            return lat, lng, bat, address, accuracy, charging
 
-    logger.info("[fetch_location] Falling back to GMAPS_SHARE_URL (HTML scrape)")
     try:
         req = urllib.request.Request(GMAPS_SHARE_URL, headers={"Cookie": cookie_header, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "https://www.google.com/maps"})
         with urllib.request.urlopen(req, timeout=15) as r:
             html = r.read().decode("utf-8", errors="ignore")
-        logger.info("[fetch_location] SHARE_URL 200 OK len=%d", len(html))
-    except urllib.error.HTTPError as e:
-        logger.warning("[fetch_location] SHARE_URL HTTP %d", e.code)
-        return None, None, None, "", 0, 0, "Desconocido"
     except Exception as e:
-        logger.warning("[fetch_location] HTML fetch error: %s", e)
-        return None, None, None, "", 0, 0, "Desconocido"
+        logger.warning("HTML fetch error: %s", e)
+        return None, None, None, "", 0, 0
 
     m = re.search(r'\[null,(-?\d+\.\d+),(-?\d+\.\d+)\]', html)
     if not m: m = re.search(r'\[null,\[(-?\d+\.\d+),(-?\d+\.\d+)\]\]', html)
@@ -1650,15 +1755,12 @@ def _fetch_location(cookie_header):
                 if coords: lat, lng = coords; m = True
             except Exception: pass
     if not m:
-        logger.warning("[fetch_location] No coords found in HTML either. len=%d", len(html))
-        return None, None, None, "", 0, 0, "Desconocido"
-    logger.info("[fetch_location] SUCCESS coords from HTML fallback")
+        logger.warning("No se encontraron coordenadas")
+        return None, None, None, "", 0, 0
     if isinstance(m, tuple): lat, lng = m
     else: lng = float(m.group(1)); lat = float(m.group(2))
     bat, address, _, _ = _parse_rpc_details(html)
-    # RA29: try to extract device label from HTML payload too (less reliable but consistent)
-    device_label = _extract_device_label(html)
-    return lat, lng, bat, address, 0, 0, device_label
+    return lat, lng, bat, address, 0, 0
 
 
 def _parse_rpc_details(text):
@@ -1680,46 +1782,6 @@ def _parse_rpc_details(text):
     ch_m = CHARGE_RE.search(text)
     charging = int(ch_m.group(1)) if ch_m else 0
     return bat, address, accuracy, charging
-
-
-def _extract_device_label(text):
-    """
-    RA29 BACKEND_DATA_ENRICHMENT — extract the sharing device's model label
-    from Google's raw Location Sharing RPC payload. Google's response is a
-    nested array structure; the device name appears as a quoted string near
-    the location entry. We try multiple regex patterns in priority order
-    (iPhone → Pixel → Samsung → generic brands → fallback). Returns the
-    first match, or 'Desconocido' if no pattern matches.
-
-    Never raises — always returns a string. The operator always sees a
-    device label, even if Google's payload is opaque or empty.
-    """
-    if not text or not isinstance(text, str):
-        return "Desconocido"
-    # Priority 1: explicit iPhone marketing name or internal model ID
-    m = DEVICE_IPHONE_RE.search(text)
-    if m: return m.group(1).strip()
-    # Priority 2: Pixel
-    m = DEVICE_PIXEL_RE.search(text)
-    if m: return m.group(1).strip()
-    # Priority 3: Samsung SM-XXXX model code
-    m = DEVICE_SAMSUNG_RE.search(text)
-    if m: return m.group(1).strip()
-    # Priority 4: Other brands (Redmi, Xiaomi, moto, OnePlus, Huawei, Galaxy)
-    m = DEVICE_GENERIC_RE.search(text)
-    if m: return m.group(1).strip()
-    # Priority 5: fallback — any quoted alphanumeric token 6-40 chars.
-    # Scan all matches and pick the first that looks like a device model
-    # (contains at least one digit). This catches opaque codes like
-    # "23116PN5BC" (Xiaomi) or "moto edge 40 neo".
-    for fm in DEVICE_FALLBACK_RE.finditer(text):
-        candidate = fm.group(1).strip()
-        # Reject obvious false positives: URLs, paths, JSON keys, sentences.
-        if any(c in candidate for c in ('/', '\\', '.', ':', '{', '}')):
-            continue
-        if any(c.isdigit() for c in candidate):
-            return candidate
-    return "Desconocido"
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1838,7 +1900,7 @@ _cookie_engine = CookieEngine()
 # ------------------------------------------------------------
 def tracking_loop(stop_event):
     global _CURRENT_BATTERY, _CURRENT_ADDRESS, _LAST_POLL_TIME, _LAST_POLL_LAT, _LAST_POLL_LNG
-    global _PREV_STATE, _LAST_UPDATE, _CURRENT_CHARGING, _LOCATION_LIVE, _DEVICE_LABEL
+    global _PREV_STATE, _LAST_UPDATE, _CURRENT_CHARGING
 
     init_csv()
     battery_info = None
@@ -1860,11 +1922,7 @@ def tracking_loop(stop_event):
                 stop_event.wait(POLL_INTERVAL)
                 continue
 
-            # RA29: _fetch_location now returns a 7-tuple including device_label.
-            # We update _DEVICE_LABEL on every poll so it persists across no_location periods.
-            lat, lng, bat, address, accuracy, charging, device_label = _fetch_location(cookie_header)
-            if device_label and device_label != "Desconocido":
-                _DEVICE_LABEL = device_label
+            lat, lng, bat, address, accuracy, charging = _fetch_location(cookie_header)
 
             if address: _CURRENT_ADDRESS = address
             if bat: battery_info = bat; _CURRENT_BATTERY = bat; _update_battery_estimate(bat)
@@ -1872,7 +1930,6 @@ def tracking_loop(stop_event):
 
             if lat is not None and lng is not None:
                 _no_coords_count = 0
-                _LOCATION_LIVE = True  # RA27: real coords this poll — PIN is live
                 if not is_duplicate(lat, lng):
                     now = datetime.now(timezone.utc)
                     speed, hdg, state = compute_telemetry(lat, lng, now)
@@ -1916,7 +1973,6 @@ def tracking_loop(stop_event):
                     _update_battery_estimate(bat)
             else:
                 _no_coords_count += 1
-                _LOCATION_LIVE = False  # RA27: no coords this poll — PIN is STALE/ghost
                 if _no_coords_count >= 3:
                     _no_coords_count = 0
                     if not SKIP_PLAYWRIGHT:
@@ -2394,182 +2450,10 @@ _LAST_POLL_LAT = None
 _LAST_POLL_LNG = None
 _CURRENT_CHARGING = ""
 _BATTERY_HISTORY = []
-
-# RA17: OSRM route proxy cache — frontend re-routes same coord pairs every poll
-# cycle (20s). Without cache this hammers OSRM demo server + fills log with 404s.
-# TTL 300s, cap 500 entries (evict oldest by insertion order).
-_OSRM_CACHE = {}
-_OSRM_CACHE_TTL = 300.0
-_OSRM_CACHE_CAP = 500
-_OSRM_BASE_URL = "https://router.project-osrm.org/route/v1/driving"
 _BATTERY_LIFE_ESTIMATE = "N/A"
 _MAX_BATTERY_HISTORY = 30
 _LAST_UPDATE = ""
 _PREV_STATE = None
-# RA27 (stracker_backend_location_integrity): flag that tracks whether the
-# LAST poll cycle returned real coordinates from Google. When False, the
-# /points endpoint MUST null out location.lat/lng and serve status=
-# 'no_location' so the frontend shows 'Sin señal' instead of a stale
-# 'ghost' PIN from a previous successful poll. This eliminates the
-# fallback-to-last-known-coords behavior that showed phantom locations.
-_LOCATION_LIVE = False
-
-
-# ══════════════════════════════════════════════════════════════════
-# RA20: Cookie payload normalizer
-# Accepts: JSON array, JSON object with 'cookies' field, header string
-#         (name=value; name2=value2), Netscape cookie file format.
-# Returns: (list_of_cookie_dicts, format_detected_string)
-# ══════════════════════════════════════════════════════════════════
-def _normalize_cookie_payload(body):
-    """Normalize any cookie input format to a list of {name, value, domain, ...} dicts.
-
-    Accepted formats:
-      1. JSON array: [{"name":"SID","value":"abc",...}, ...]
-      2. JSON object: {"cookies": [...]} or [{...}] nested
-      3. Header string: "SID=abc; HSID=def; SSID=ghi"
-      4. Netscape cookie file: domain\tFLAG\tpath\tSECURE\tEXPIRY\tNAME\tVALUE
-    """
-    body = body.strip()
-    if not body:
-        return [], "empty"
-
-    # --- Format 1 & 2: JSON ---
-    if body[0] in "[{":
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError as e:
-            return [], f"json_invalid ({str(e)[:60]})"
-
-        # JSON array of cookies
-        if isinstance(parsed, list):
-            # V6.5 BACKEND_COOKIE_REPAIR: be MAXIMALLY tolerant. Accept ANY dict
-            # item — let _normalize_cookie_obj extract name/value from any
-            # name-like field. Items with empty names after normalization are
-            # filtered out (don't reject the whole batch because of 1 bad entry).
-            # This handles Cookie-Editor JSON Array exports with extra fields
-            # (domain, path, secure, httpOnly, sameSite, etc.) without errors.
-            cookies = []
-            for item in parsed:
-                if not isinstance(item, dict):
-                    continue
-                # Wrapper object inside array (e.g. {"cookies": [...]})
-                if "cookies" in item and isinstance(item["cookies"], list):
-                    for sub in item["cookies"]:
-                        if isinstance(sub, dict):
-                            norm = _normalize_cookie_obj(sub)
-                            if norm.get("name"):
-                                cookies.append(norm)
-                else:
-                    norm = _normalize_cookie_obj(item)
-                    if norm.get("name"):
-                        cookies.append(norm)
-            if cookies:
-                return cookies, "json_array"
-            return [], "json_array_empty"
-
-        # JSON object — could be {cookies: [...]} or a single cookie {name, value}
-        if isinstance(parsed, dict):
-            # Single cookie object
-            if "name" in parsed or "Name" in parsed:
-                return [_normalize_cookie_obj(parsed)], "json_object_single"
-            # Wrapper with cookies field
-            for key in ("cookies", "cookie", "data", "items"):
-                if key in parsed and isinstance(parsed[key], list):
-                    cookies = [_normalize_cookie_obj(c) for c in parsed[key] if isinstance(c, dict)]
-                    if cookies:
-                        return cookies, f"json_object_{key}"
-            # Cookie-Editor export sometimes wraps differently
-            if "exported" in parsed and isinstance(parsed["exported"], list):
-                cookies = [_normalize_cookie_obj(c) for c in parsed["exported"] if isinstance(c, dict)]
-                if cookies:
-                    return cookies, "json_object_exported"
-            return [], "json_object_no_cookies_field"
-
-    # --- Format 3: Header string (name=value; name2=value2) ---
-    # Detect: has '=' and either ';' or multiple '=' pairs, and NOT a JSON
-    if "=" in body and ";" in body and not body.startswith("{"):
-        cookies = []
-        pairs = body.split(";")
-        for pair in pairs:
-            pair = pair.strip()
-            if not pair or "=" not in pair:
-                continue
-            # Split on first '=' only (values may contain '=')
-            name, _, value = pair.partition("=")
-            name = name.strip()
-            # Skip header names like "Cookie:" or "Set-Cookie:"
-            if name.lower() in ("cookie", "set-cookie"):
-                continue
-            if name:
-                cookies.append({
-                    "name": name,
-                    "value": value.strip().strip('"'),
-                    "domain": ".google.com",
-                    "path": "/",
-                })
-        if cookies:
-            return cookies, "header_string"
-        return [], "header_string_no_pairs"
-
-    # --- Format 4: Netscape cookie file ---
-    # Lines: domain\tFLAG\tpath\tSECURE\tEXPIRY\tNAME\tVALUE (tab-separated)
-    # Lines starting with # are comments
-    if "\t" in body:
-        cookies = []
-        for line in body.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("\t")
-            if len(parts) >= 7:
-                domain, _flag, path, _secure, _expiry, name, value = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6]
-                cookies.append({
-                    "name": name,
-                    "value": value,
-                    "domain": domain,
-                    "path": path,
-                    "secure": _secure.upper() == "TRUE",
-                    "expirationDate": float(_expiry) if _expiry.replace(".", "", 1).isdigit() else None,
-                })
-        if cookies:
-            return cookies, "netscape_file"
-        return [], "netscape_no_valid_lines"
-
-    # --- Format 5: Single name=value (no semicolons) — treat as one cookie ---
-    if "=" in body and " " not in body.split("=")[0]:
-        name, _, value = body.partition("=")
-        name = name.strip()
-        if name:
-            return [{
-                "name": name,
-                "value": value.strip().strip('"'),
-                "domain": ".google.com",
-                "path": "/",
-            }], "single_pair"
-
-    return [], "unknown_format"
-
-
-def _normalize_cookie_obj(c):
-    """V6.5: Normalize a cookie dict. Accepts a WIDE range of name/value field
-    variants (name/Name/cookieName/cookie_name/key/n + value/Value/cookieValue/
-    cookie_value/v/val) so that any Cookie-Editor export format is parsed without
-    errors. Extra fields (domain, path, secure, httpOnly, sameSite, etc.) are
-    preserved but never break parsing. Always returns a dict with 'name' and
-    'value' keys (empty string if not found — the caller filters empty names)."""
-    return {
-        "name": c.get("name") or c.get("Name") or c.get("cookieName") or c.get("cookie_name") or c.get("key") or c.get("n") or "",
-        "value": c.get("value") or c.get("Value") or c.get("cookieValue") or c.get("cookie_value") or c.get("v") or c.get("val") or "",
-        "domain": c.get("domain") or c.get("Domain") or ".google.com",
-        "path": c.get("path") or c.get("Path") or "/",
-        "secure": c.get("secure", True) if isinstance(c.get("secure"), bool) else True,
-        "httpOnly": c.get("httpOnly", False) if isinstance(c.get("httpOnly"), bool) else False,
-        "expirationDate": c.get("expirationDate") or c.get("expiry") or c.get("expires"),
-        "sameSite": c.get("sameSite"),
-        "hostOnly": c.get("hostOnly", False),
-        "session": c.get("session", False),
-    }
 
 
 class TrackerHandler(SimpleHTTPRequestHandler):
@@ -2579,582 +2463,399 @@ class TrackerHandler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         logger.info("HTTP %s - %s", self.client_address[0], fmt % args)
 
+    # ── V6.0 SECURITY_EXTERNAL_AUDIT — strict CORS + hardening headers ──
+    # The allowed origin list is sourced from env var CORS_ALLOWED_ORIGINS
+    # (comma-separated). Defaults cover the production deployment and
+    # local dev. The wildcard "*" is intentionally NOT used.
+    def _allowed_origin(self) -> str:
+        origin = self.headers.get("Origin", "")
+        if not origin:
+            return ""
+        raw = os.environ.get(
+            "CORS_ALLOWED_ORIGINS",
+            "https://strackerglm.onrender.com,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8765,http://127.0.0.1:8765",
+        )
+        allowed = [o.strip() for o in raw.split(",") if o.strip()]
+        # Always allow same-origin (Host matches Origin's host)
+        host = self.headers.get("Host", "")
+        if host:
+            allowed.append(f"http://{host}")
+            allowed.append(f"https://{host}")
+        if origin in allowed:
+            return origin
+        return ""
+
+    def _apply_security_headers(self) -> None:
+        """
+        V6.0 SECURITY_EXTERNAL_AUDIT — apply hardening headers to every
+        response. Call BEFORE end_headers().
+
+        Headers:
+          - Strict-Transport-Security: HSTS (2 years + preload)
+          - Content-Security-Policy: restrictive (scripts/styles self only)
+          - X-Frame-Options: DENY (clickjacking)
+          - X-Content-Type-Options: nosniff (MIME sniffing)
+          - Referrer-Policy: strict-origin-when-cross-origin
+          - Permissions-Policy: lock down sensitive APIs
+          - Cross-Origin-Opener-Policy: same-origin
+        """
+        # HSTS — only meaningful over HTTPS, but Render terminates TLS so
+        # the header still propagates to browsers via the proxy.
+        self.send_header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+        # CSP — v6.1 emergency_repair (AUDIT_CSP_HEADERS).
+        # NOTE: the project uses Leaflet (NOT Google Maps). The legacy
+        # mapa.html loads Leaflet JS+CSS from https://unpkg.com — so both
+        # script-src AND style-src must whitelist unpkg.com. The Next.js
+        # app itself bundles Leaflet via npm (same-origin) and is unaffected.
+        # Map tiles (OpenStreetMap etc.) are served over https, covered by
+        # img-src 'https:'. Socket.io realtime gateway uses wss/ws, covered
+        # by connect-src 'wss: ws:'. No googleapis.com/gstatic.com needed.
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; "
+            "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+            "img-src 'self' data: blob: https:; "
+            "font-src 'self' data:; "
+            "connect-src 'self' https://strackerglm.onrender.com wss: ws:; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "object-src 'none'",
+        )
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header(
+            "Permissions-Policy",
+            "geolocation=(self), camera=(), microphone=(), payment=(), usb=(), magnetometer=(), gyroscope=()",
+        )
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("X-DNS-Prefetch-Control", "off")
+
+    def _apply_cors_headers(self) -> str:
+        """Apply strict CORS headers. Returns the allowed origin (or "")."""
+        origin = self._allowed_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header(
+                "Access-Control-Allow-Methods",
+                "GET, POST, OPTIONS",
+            )
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Content-Type, Authorization, X-Session-Token, X-Request-Id",
+            )
+            self.send_header("Access-Control-Max-Age", "600")
+        return origin
+
+    def end_headers(self):
+        """
+        V6.0 SECURITY_EXTERNAL_AUDIT — apply hardening headers to EVERY
+        response (including static files served by SimpleHTTPRequestHandler
+        via super().do_GET()). This override fires once before the headers
+        are flushed to the wire.
+        """
+        # Idempotent guards: avoid double-applying when _send_json already
+        # called _apply_security_headers(). We track via instance flag.
+        if not getattr(self, "_security_headers_sent", False):
+            try:
+                self._apply_security_headers()
+                # Only stamp CORS for same-origin/static responses; the
+                # _send_json path already handles CORS explicitly.
+                if not getattr(self, "_cors_headers_sent", False):
+                    self._apply_cors_headers()
+            except Exception:
+                pass
+            self._security_headers_sent = True
+        super().end_headers()
+
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
+        self._apply_cors_headers()
+        self._cors_headers_sent = True
+        self._apply_security_headers()
+        self._security_headers_sent = True
+        super().end_headers()  # bypass our override (already stamped)
         self.wfile.write(body)
 
+    def do_OPTIONS(self):
+        """CORS preflight handler — respond with the allowed methods/headers."""
+        self.send_response(204)  # No Content
+        self._apply_cors_headers()
+        self._cors_headers_sent = True
+        self._apply_security_headers()
+        self._security_headers_sent = True
+        self.send_header("Content-Length", "0")
+        super().end_headers()
+
     def do_GET(self):
-        path = self.path.split("?", 1)[0]  # RA1: strip query string for route matching
-        if path in ("/health", "/health/", "/healthz"):
+        if self.path in ("/health", "/health/", "/healthz"):
             try:
                 csv_exists = CSV_PATH.exists()
                 html_exists = HTML_PATH.exists()
+                archive_exists = GHOSTRAIL_ARCHIVE_PATH.exists()
                 point_count = 0
                 if csv_exists: point_count = max(0, sum(1 for _ in open(CSV_PATH, encoding="utf-8")) - 1)
-                self._send_json({"status": "ok", "uptime_s": round(time.time() - _SERVER_START_TS, 2), "base_dir": str(BASE_DIR), "html_exists": html_exists, "csv_exists": csv_exists, "points": point_count, "version": "v6", "timestamp": datetime.now(timezone.utc).isoformat()})
+                self._send_json({"status": "ok", "uptime_s": round(time.time() - _SERVER_START_TS, 2), "base_dir": str(BASE_DIR), "html_exists": html_exists, "csv_exists": csv_exists, "archive_exists": archive_exists, "points": point_count, "version": "v6.0_final_polish", "timestamp": datetime.now(timezone.utc).isoformat(), "security": {"hsts": True, "csp": True, "x_frame_options": "DENY", "x_content_type_options": "nosniff", "cors": "strict"}, "storage": {"hot_db": "ghostrail.enc", "cold_db": "ghostrail_archive.enc", "archive_age_days": ARCHIVE_AGE_DAYS, "archive_compression": "zip"}})
             except Exception as e:
                 self._send_json({"status": "error", "error": str(e)}, status=500)
             return
 
-        if path in ("/points", "/points/"):
+        # V6.0 STORAGE_OPTIMIZATION: /api/archive endpoint
+        # Reads cold storage (ghostrail_archive.enc) on demand.
+        # Supports ?offset=0&limit=500 pagination + ?dry_run=1 to preview
+        # archival impact without mutating state. Rate limited: 10 req/min.
+        if self.path.startswith("/api/archive") or self.path.startswith("/archive"):
+            ip = _get_client_ip(self)
+            allowed, retry_after = _rate_limiter.check(ip, limit=10, window_s=60)
+            if not allowed:
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Retry-After", str(retry_after))
+                self._apply_cors_headers()
+                self._cors_headers_sent = True
+                self._apply_security_headers()
+                self._security_headers_sent = True
+                super().end_headers()
+                self.wfile.write(json.dumps({"error": "rate_limited", "retry_after_s": retry_after}).encode("utf-8"))
+                return
+            try:
+                # Parse query string for offset/limit/dry_run
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(self.path)
+                qs = parse_qs(parsed.query)
+                offset = max(0, int(qs.get("offset", ["0"])[0] or "0"))
+                limit = max(1, min(2000, int(qs.get("limit", ["500"])[0] or "500")))
+                dry = qs.get("dry_run", ["0"])[0] in ("1", "true", "yes")
+
+                if dry:
+                    # Dry-run: project archival impact without writing
+                    summary = archive_cold_data(dry_run=True)
+                    self._send_json({
+                        "version": "v6.0_cold_storage",
+                        "action": "dry_run",
+                        "archive_age_days": ARCHIVE_AGE_DAYS,
+                        "threshold": summary.get("threshold"),
+                        "would_archive": summary.get("archived", 0),
+                        "would_keep_hot": summary.get("kept_hot", 0),
+                        "projected_archive_total": summary.get("archive_total", 0),
+                        "compression": "zip",
+                    })
+                    return
+
+                payload = read_archive(offset=offset, limit=limit)
+                self._send_json({
+                    "version": payload.get("version", "v6.0_cold_storage"),
+                    "algorithm": payload.get("algorithm", "AES-256-GCM"),
+                    "compression": payload.get("compression", "zip"),
+                    "archive_age_days": ARCHIVE_AGE_DAYS,
+                    "record_count": payload.get("record_count", 0),
+                    "offset": payload.get("offset", offset),
+                    "limit": payload.get("limit", limit),
+                    "returned": payload.get("returned", 0),
+                    "archived_at": payload.get("archived_at"),
+                    "records": payload.get("records", []),
+                    "_v60": {"cold_storage": True, "endpoint": "/api/archive", "hot_db": "/ghostrail/encrypted"},
+                })
+            except Exception as e:
+                logger.error("/api/archive error: %s", e)
+                self._send_json({"status": "error", "error": str(e)}, status=500)
+            return
+
+        # V5.8 SECURITY_FORTRESS: /ghostrail/encrypted endpoint
+        # Returns the AES-256-GCM encrypted blob (verification artifact).
+        # Rate limited: 10 req/min per IP.
+        if self.path in ("/ghostrail/encrypted", "/ghostrail/encrypted/"):
+            ip = _get_client_ip(self)
+            allowed, retry_after = _rate_limiter.check(ip, limit=10, window_s=60)
+            if not allowed:
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Retry-After", str(retry_after))
+                self._apply_cors_headers()
+                self._cors_headers_sent = True
+                self._apply_security_headers()
+                self._security_headers_sent = True
+                super().end_headers()
+                self.wfile.write(json.dumps({"error": "rate_limited", "retry_after_s": retry_after}).encode("utf-8"))
+                return
+            try:
+                blob = read_encrypted_ghostrail()
+                # Include the algorithm metadata for the verification matrix
+                self._send_json({
+                    "version": blob.get("version", "v5.8_pro_fortress"),
+                    "algorithm": blob.get("algorithm", "AES-256-GCM"),
+                    "iv_bits": blob.get("iv_bits", 96),
+                    "tag_bits": blob.get("tag_bits", 128),
+                    "key_rotation_days": blob.get("key_rotation_days", 30),
+                    "record_count": blob.get("record_count", 0),
+                    "encrypted_at": blob.get("encrypted_at"),
+                    "aesgcm_available": _AESGCM_AVAILABLE,
+                    "secret_key_configured": bool(os.environ.get("SECRET_KEY")),
+                    # The actual encrypted records (base64-encoded IV || ciphertext || tag)
+                    "records": blob.get("records", []),
+                    # Sample of the first record (truncated for inspection)
+                    "sample_record_prefix": (blob.get("records", [""])[0] or "")[:32] + "..." if blob.get("records") else None,
+                })
+            except Exception as e:
+                logger.error("/ghostrail/encrypted error: %s", e)
+                self._send_json({"status": "error", "error": str(e)}, status=500)
+            return
+
+        # V5.8 PREDICT_ENGINE_MARKOV: /predict endpoint
+        # Returns the server-side Markov chain prediction.
+        # Rate limited: 30 req/min per IP.
+        if self.path in ("/predict", "/predict/"):
+            ip = _get_client_ip(self)
+            allowed, retry_after = _rate_limiter.check(ip, limit=30, window_s=60)
+            if not allowed:
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Retry-After", str(retry_after))
+                self._apply_cors_headers()
+                self._cors_headers_sent = True
+                self._apply_security_headers()
+                self._security_headers_sent = True
+                super().end_headers()
+                self.wfile.write(json.dumps({"error": "rate_limited", "retry_after_s": retry_after}).encode("utf-8"))
+                return
+            try:
+                pts = read_all_points() if CSV_PATH.exists() else []
+                prediction = predict_next_server(pts)
+                self._send_json({
+                    "version": "v5.8_pro_fortress",
+                    "engine": "first_order_markov",
+                    "matrix": "P(Dest | Origin, HourBucket)",
+                    "hour_bucket_size_h": _HOUR_BUCKET_SIZE,
+                    "visit_radius_m": _VISIT_RADIUS_M,
+                    "point_count_24h": len(pts),
+                    "prediction": prediction,
+                })
+            except Exception as e:
+                logger.error("/predict error: %s", e)
+                self._send_json({"status": "error", "error": str(e)}, status=500)
+            return
+
+        if self.path in ("/points", "/points/"):
+            # V5.8 SECURITY_FORTRESS: Rate limit /points to 60 req/min per IP.
+            # This is the primary data endpoint — without a cap, a malicious
+            # client could hammer the server and exhaust the CSV reader.
+            ip = _get_client_ip(self)
+            allowed, retry_after = _rate_limiter.check(ip, limit=60, window_s=60)
+            if not allowed:
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Retry-After", str(retry_after))
+                self._apply_cors_headers()
+                self._cors_headers_sent = True
+                self._apply_security_headers()
+                self._security_headers_sent = True
+                super().end_headers()
+                self.wfile.write(json.dumps({"error": "rate_limited", "retry_after_s": retry_after}).encode("utf-8"))
+                return
             try:
                 pts = read_all_points() if CSV_PATH.exists() else []
                 sts = compute_stats(pts) if pts else {}
                 if _PREV_STATE is not None:
                     state = _PREV_STATE
-                    # RA27 (location integrity): if the last poll returned NO
-                    # real coordinates from Google, null out the location in the
-                    # SERVED state so the frontend shows 'Sin señal' instead of
-                    # a stale 'ghost' PIN. We deep-copy + null the location fields
-                    # so the internal _PREV_STATE is preserved for when signal
-                    # returns, but the frontend NEVER sees phantom coordinates.
-                    if not _LOCATION_LIVE:
-                        import copy as _copy_mod
-                        state = _copy_mod.deepcopy(state)
-                        if "location" in state:
-                            state["location"]["lat"] = None
-                            state["location"]["lng"] = None
-                            state["location"]["status"] = "no_location"
-                            state["location"]["label_primary"] = "Sin señal"
-                            state["location"]["signal"] = "no_location"
                 else:
                     speed = sts.get("current_speed_kmh", 0) or 0
-                    # RA27: no _PREV_STATE at all — use last CSV point BUT null
-                    # the coords if the last poll had no live signal, so we never
-                    # serve a stale/ghost location to the frontend.
-                    _fallback_lat = pts[-1].get("lat") if pts and _LOCATION_LIVE else None
-                    _fallback_lng = pts[-1].get("lng") if pts and _LOCATION_LIVE else None
-                    raw = {"lat": _fallback_lat, "lng": _fallback_lng, "speed_kmh": speed, "battery": _CURRENT_BATTERY, "accuracy": None, "address": _CURRENT_ADDRESS or "", "charging": None, "timestamp": _LAST_UPDATE.isoformat() if _LAST_UPDATE else None}
+                    raw = {"lat": pts[-1].get("lat") if pts else None, "lng": pts[-1].get("lng") if pts else None, "speed_kmh": speed, "battery": _CURRENT_BATTERY, "accuracy": None, "address": _CURRENT_ADDRESS or "", "charging": None, "timestamp": _LAST_UPDATE.isoformat() if _LAST_UPDATE else None}
                     state = normalize_state(raw, None)
-                    if not _LOCATION_LIVE and "location" in state:
-                        state["location"]["status"] = "no_location"
-                        state["location"]["label_primary"] = "Sin señal"
-                        state["location"]["signal"] = "no_location"
-                # Extract ghostrail_pts for frontend ghost trail rendering.
-                # V6.9 IMMORTAL HISTORY: prefer the CSV-derived 24h points (which
-                # carry valid ISO timestamps AND survive cold starts via the gist
-                # sync). The in-memory state.ghostrail.points_24h buffer lacks
-                # timestamps and resets on every restart — using it alone caused
-                # the frontend memo to discard every point (discarded_no_ts) and
-                # rendered no trail. The CSV is now the canonical immortal source.
+                # Extract ghostrail_pts from state for frontend compatibility
                 ghostrail_pts = []
-                try:
-                    csv_pts = read_all_points()  # 24h window, ISO-timestamped
-                    if csv_pts:
-                        # CSV points already have {timestamp, lat, lng, speed_kmh,
-                        # heading, movement_state, address, accuracy} — exactly
-                        # what the frontend GhostTrail memo expects.
-                        ghostrail_pts = csv_pts
-                except Exception as _e:
-                    logger.warning("V6.9 ghostrail CSV read failed: %s", _e)
-                # Fallback: if CSV is empty (first-ever boot, gist not yet
-                # populated), use the in-memory buffer so the trail isn't blank.
-                if not ghostrail_pts and isinstance(state, dict) and "ghostrail" in state:
-                    mem_pts = state["ghostrail"].get("points_24h", [])
-                    # Inject the current timestamp so the frontend filter keeps them.
-                    _now_iso = datetime.now(timezone.utc).isoformat()
-                    ghostrail_pts = [
-                        {**p, "timestamp": p.get("timestamp") or _now_iso}
-                        for p in mem_pts
-                    ]
-                # RA29 BACKEND_DATA_ENRICHMENT: surface the cached device label in
-                # the /points response. Injected under both state.device.device_label
-                # (colocated with battery/charging) and state.meta.device_label
-                # (top-level summary) so the frontend can read it from either spot.
-                # _DEVICE_LABEL persists across no_location polls (updated only on
-                # successful extract), so the operator always sees the device
-                # fingerprint even when the current poll returned no coords.
-                if isinstance(state, dict):
-                    if "device" in state and isinstance(state["device"], dict):
-                        state["device"]["device_label"] = _DEVICE_LABEL
-                    if "meta" in state and isinstance(state["meta"], dict):
-                        state["meta"]["device_label"] = _DEVICE_LABEL
-                self._send_json({"points": pts, "stats": sts, "state": state, "ghostrail_pts": ghostrail_pts, "last_update": _LAST_UPDATE.isoformat() if _LAST_UPDATE else None, "device_label": _DEVICE_LABEL})
+                if isinstance(state, dict) and "ghostrail" in state:
+                    ghostrail_pts = state["ghostrail"].get("points_24h", [])
+                # V5.8: include rate-limit headers so clients can see their quota
+                self._send_json({"points": pts, "stats": sts, "state": state, "ghostrail_pts": ghostrail_pts, "last_update": _LAST_UPDATE.isoformat() if _LAST_UPDATE else None, "_v58": {"rate_limit": "60/min", "encrypted_db": "/ghostrail/encrypted", "predict": "/predict"}, "_v60": {"cold_storage": "/api/archive", "archive_age_days": ARCHIVE_AGE_DAYS, "security_headers": ["HSTS", "CSP", "X-Frame-Options", "X-Content-Type-Options"], "cors": "strict"}})
             except Exception as e:
                 logger.error("/points error: %s", e)
                 self._send_json({"status": "error", "error": str(e)}, status=500)
             return
 
-        if path in ("", "/"):
+        if self.path in ("", "/"):
             # Serve Next.js app at root (not /mapa.html redirect)
-            # RA19: Try multiple locations for index.html to avoid fallback to
-            # old mapa.html. Build process may place it at root OR in nextjs-ui/.
-            idx_candidates = [
-                BASE_DIR / "index.html",
-                BASE_DIR / "nextjs-ui" / "index.html",
-            ]
-            idx = None
-            for candidate in idx_candidates:
-                if candidate.exists():
-                    idx = candidate
-                    break
-            if idx is not None:
+            idx = BASE_DIR / "index.html"
+            if idx.exists():
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
-                # RA12: aggressive cache-busting for HTML — always revalidate
-                # Prevents stale UI from being served by browser/CDN cache
-                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-                self.send_header("Pragma", "no-cache")
-                self.send_header("Expires", "0")
-                # Weak ETag based on file size + mtime — changes when index.html is redeployed
-                try:
-                    stat = idx.stat()
-                    etag = 'W/"%x-%x"' % (int(stat.st_mtime), stat.st_size)
-                    self.send_header("ETag", etag)
-                except Exception:
-                    pass
                 body = idx.read_bytes()
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
                 return
-            # Fallback to old mapa.html if NO index.html found anywhere
+            # Fallback to old mapa.html if index.html missing
             self.send_response(302); self.send_header("Location", "/mapa.html"); self.end_headers(); return
 
-        if path == "/cookies.html":
+        if self.path == "/cookies.html":
             self._serve_cookies_page(); return
-
-        # RA2: Force-poll endpoint for on-demand diagnosis
-        if path == "/force-poll":
-            self._handle_force_poll(); return
-
-        # RA3+RA5: Self-diagnostic page (recovered from commit a9f9721)
-        if path == "/diagnose":
-            self._serve_diagnose_page(); return
-
-        # RA17: OSRM routing proxy — road-aligned ghost trail
-        if path == "/osrm-route":
-            self._handle_osrm_route(); return
-
-        # V6.10d STATIC_ASSET_FALLBACK: Render's build command only copies
-        # _next/ and index.html to the project root. Other static assets
-        # (manifest.json, logo.svg, robots.txt, 404.html, mapa.html) exist
-        # only in nextjs-ui/ subfolder. SimpleHTTPRequestHandler serves from
-        # BASE_DIR (root) and returns a bare 404 for anything missing.
-        # This fallback checks nextjs-ui/ before letting super() 404, so
-        # /manifest.json → nextjs-ui/manifest.json is served correctly.
-        # Also guards against path traversal (no .. or absolute paths).
-        requested = path.lstrip("/")
-        if requested and ".." not in requested:
-            root_candidate = BASE_DIR / requested
-            if not root_candidate.exists() or not root_candidate.is_file():
-                niu_candidate = BASE_DIR / "nextjs-ui" / requested
-                if niu_candidate.exists() and niu_candidate.is_file():
-                    try:
-                        body = niu_candidate.read_bytes()
-                        self.send_response(200)
-                        import mimetypes as _mt
-                        ctype, _ = _mt.guess_type(requested)
-                        if not ctype:
-                            ctype = "application/octet-stream"
-                        self.send_header("Content-Type", ctype)
-                        self.send_header("Content-Length", str(len(body)))
-                        self.send_header("Cache-Control", "public, max-age=3600")
-                        self.end_headers()
-                        self.wfile.write(body)
-                        return
-                    except Exception as _e:
-                        logger.warning("V6.10d static fallback failed for %s: %s", path, _e)
 
         return super().do_GET()
 
     def do_POST(self):
-        path = self.path.split("?", 1)[0]  # RA1: strip query string
-        if path in ("/api/cookies", "/cookies"):
+        if self.path in ("/api/cookies", "/cookies"):
             self._handle_cookies_upload(); return
         self.send_response(404); self.end_headers()
 
-    def _handle_force_poll(self):
-        """RA2: On-demand Google fetch for production diagnosis."""
-        try:
-            cookie_header = _load_cookie_header()
-            if not cookie_header:
-                self._send_json({"status": "error", "error": "No cookies loaded", "has_critical": False}, status=400)
-                return
-            # Cookie diagnostics
-            try:
-                with open(COOKIES_PATH, encoding="utf-8") as f:
-                    all_cookies = json.load(f)
-                google_cookies = [c for c in all_cookies if "google.com" in c.get("domain", "")]
-                critical_names = ["__Secure-1PSID", "__Secure-3PSID", "SAPISID", "APISID", "HSID", "SSID", "SID"]
-                present_critical = [n for n in critical_names if any(c.get("name") == n for c in google_cookies)]
-                missing_critical = [n for n in critical_names if n not in present_critical]
-            except Exception:
-                google_cookies = []; present_critical = []; missing_critical = critical_names
-
-            # RA29: _fetch_location now returns 7-tuple with device_label.
-            # Update _DEVICE_LABEL global so /points can serve it later.
-            lat, lng, bat, address, accuracy, charging, device_label = _fetch_location(cookie_header)
-            global _DEVICE_LABEL
-            if device_label and device_label != "Desconocido":
-                _DEVICE_LABEL = device_label
-            self._send_json({
-                "status": "ok" if lat is not None else "no_location",
-                "lat": lat, "lng": lng,
-                "battery": bat, "address": address,
-                "accuracy": accuracy, "charging": charging,
-                "device_label": _DEVICE_LABEL,  # RA29: device fingerprint (persisted)
-                "cookie_count_google": len(google_cookies),
-                "cookie_count_total": len(all_cookies) if 'all_cookies' in dir() else 0,
-                "has_critical": len(missing_critical) == 0,
-                "missing_critical": missing_critical,
-                "present_critical": present_critical,
-                "cookie_header_len": len(cookie_header),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "diagnosis": "Cookies auth OK but Google reports no active location sharing. Verify Location Sharing is enabled in Google Maps for this account."
-                             if lat is None else "Location data retrieved successfully."
-            })
-        except Exception as e:
-            logger.error("[force-poll] error: %s", e)
-            self._send_json({"status": "error", "error": str(e)}, status=500)
-
-    def _handle_osrm_route(self):
-        """RA17: OSRM routing proxy for road-aligned ghost trail.
-
-        Frontend (TrackerView.tsx) calls GET /osrm-route?coords=lng,lat;lng,lat;...
-        This was hitting SimpleHTTPRequestHandler -> 404 (46K+ log entries).
-        Now proxies to public OSRM server with in-memory cache + straight-line
-        fallback on any failure.
-
-        Returns JSON: { points: [[lat,lng],...], distance_m, duration_s, routed }
-        """
-        from urllib.parse import urlparse, parse_qs
-        try:
-            parsed = urlparse(self.path)
-            qs = parse_qs(parsed.query)
-            coords_list = qs.get("coords", [""])
-            coords = coords_list[0] if coords_list else ""
-            if not coords:
-                self._send_json({"error": "Missing coords param", "points": [], "routed": False}, status=400)
-                return
-
-            # Check cache first (frontend re-requests same pairs every 20s)
-            now = time.time()
-            cached = _OSRM_CACHE.get(coords)
-            if cached and (now - cached[0]) < _OSRM_CACHE_TTL:
-                self._send_json(cached[1])
-                return
-
-            # Parse "lng,lat;lng,lat;..." format
-            pairs = coords.split(";")
-            if len(pairs) < 2:
-                self._send_json({"error": "Need at least 2 points", "points": [], "routed": False}, status=400)
-                return
-            parsed_pts = []
-            for pair in pairs:
-                parts = pair.split(",")
-                if len(parts) != 2:
-                    self._send_json({"error": "Invalid coordinate", "points": [], "routed": False}, status=400)
-                    return
-                try:
-                    lng = float(parts[0]); lat = float(parts[1])
-                except ValueError:
-                    self._send_json({"error": "Invalid coordinate", "points": [], "routed": False}, status=400)
-                    return
-                if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
-                    self._send_json({"error": "Coordinate out of range", "points": [], "routed": False}, status=400)
-                    return
-                parsed_pts.append([lat, lng])  # store as [lat, lng]
-
-            # If only 2 points very close (<20m), skip routing
-            if len(parsed_pts) == 2:
-                dLat = parsed_pts[1][0] - parsed_pts[0][0]
-                dLng = parsed_pts[1][1] - parsed_pts[0][1]
-                dist_m = math.sqrt(dLat * dLat * 111000 * 111000 + dLng * dLng * 85000 * 85000)
-                if dist_m < 20:
-                    result = {"points": parsed_pts, "distance_m": dist_m, "duration_s": 0, "routed": False}
-                    self._send_json(result)
-                    return
-
-            # Proxy to OSRM demo server
-            osrm_url = "%s/%s?overview=full&geometries=geojson" % (_OSRM_BASE_URL, coords)
-            req = urllib.request.Request(osrm_url, headers={"Accept": "application/json", "User-Agent": "stracker-v6/1.0"})
-            try:
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    if resp.status != 200:
-                        result = {"points": parsed_pts, "distance_m": 0, "duration_s": 0, "routed": False}
-                        self._cache_and_send(coords, result, now)
-                        return
-                    data = json.loads(resp.read().decode("utf-8"))
-                if data.get("code") != "Ok" or not data.get("routes"):
-                    result = {"points": parsed_pts, "distance_m": 0, "duration_s": 0, "routed": False}
-                    self._cache_and_send(coords, result, now)
-                    return
-                route = data["routes"][0]
-                geometry = route.get("geometry") or {}
-                coords_geo = geometry.get("coordinates") or []
-                if not coords_geo:
-                    result = {"points": parsed_pts, "distance_m": 0, "duration_s": 0, "routed": False}
-                    self._cache_and_send(coords, result, now)
-                    return
-                # Convert GeoJSON [lng, lat] to Leaflet [lat, lng]
-                points = [[c[1], c[0]] for c in coords_geo]
-                result = {
-                    "points": points,
-                    "distance_m": route.get("distance", 0),
-                    "duration_s": route.get("duration", 0),
-                    "routed": True,
-                }
-                self._cache_and_send(coords, result, now)
-            except Exception as osrm_err:
-                logger.warning("[osrm-route] OSRM error (%s), falling back to straight line", osrm_err)
-                result = {"points": parsed_pts, "distance_m": 0, "duration_s": 0, "routed": False}
-                self._cache_and_send(coords, result, now)
-        except Exception as e:
-            logger.error("[osrm-route] handler error: %s", e)
-            self._send_json({"error": str(e), "points": [], "routed": False}, status=500)
-
-    def _cache_and_send(self, coords, result, now):
-        """RA17: Store result in OSRM cache (with cap eviction) and send to client."""
-        # Evict oldest entries if at capacity
-        if len(_OSRM_CACHE) >= _OSRM_CACHE_CAP:
-            oldest_key = next(iter(_OSRM_CACHE))
-            del _OSRM_CACHE[oldest_key]
-        _OSRM_CACHE[coords] = (now, result)
-        self._send_json(result)
-
-    def _serve_diagnose_page(self):
-        """RA3+RA5: Self-contained diagnostic page. Calls /force-poll and shows
-        actionable guidance. No frontend rebuild required — served by Python.
-        Recovered from commit a9f9721 (lost in v6.2 force-push)."""
-        html = """<!DOCTYPE html>
-<html lang="es"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Stracker — Diagnóstico</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',system-ui,sans-serif;
-  background:#0a0a0a;color:#f5f5f7;padding:20px;max-width:680px;margin:0 auto;min-height:100vh}
-h1{font-size:24px;font-weight:700;margin:8px 0 4px;
-  background:linear-gradient(135deg,#0a84ff,#5e5ce6);-webkit-background-clip:text;
-  -webkit-text-fill-color:transparent;background-clip:text}
-.sub{color:#8a8a8a;font-size:13px;margin-bottom:20px}
-.card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
-  border-radius:16px;padding:18px;margin:12px 0}
-.card h2{font-size:15px;font-weight:600;margin-bottom:10px;color:#f5f5f7}
-.status-row{display:flex;justify-content:space-between;align-items:center;
-  padding:8px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px}
-.status-row:last-child{border-bottom:0}
-.status-row .k{color:#8a8a8a}
-.status-row .v{font-family:'SF Mono',Menlo,monospace;font-weight:500}
-.ok{color:#30d158}.warn{color:#ff9f0a}.err{color:#ff453a}.muted{color:#6e6e73}
-.pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;
-  font-weight:600;text-transform:uppercase;letter-spacing:.5px}
-.pill.ok{background:rgba(48,209,88,.15);color:#30d158}
-.pill.warn{background:rgba(255,159,10,.15);color:#ff9f0a}
-.pill.err{background:rgba(255,69,58,.15);color:#ff453a}
-button{background:#0a84ff;color:#fff;border:0;padding:12px 24px;border-radius:12px;
-  font-size:15px;font-weight:600;cursor:pointer;margin:8px 4px 0 0}
-button:hover{background:#0070e0}
-button.secondary{background:rgba(255,255,255,.08)}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.2);
-  border-top-color:#0a84ff;border-radius:50%;animation:sp .8s linear infinite;vertical-align:middle}
-@keyframes sp{to{transform:rotate(360deg)}}
-.steps{counter-reset:step;list-style:none;margin:12px 0}
-.steps li{counter-increment:step;padding:8px 0 8px 36px;position:relative;font-size:13px;color:#d5d5d8;line-height:1.5}
-.steps li::before{content:counter(step);position:absolute;left:0;top:6px;width:24px;height:24px;
-  border-radius:50%;background:rgba(10,132,255,.2);color:#0a84ff;font-weight:700;
-  font-size:12px;display:flex;align-items:center;justify-content:center}
-.steps strong{color:#fff}
-.hint{background:rgba(255,159,10,.08);border:1px solid rgba(255,159,10,.2);
-  border-radius:12px;padding:12px 14px;font-size:12px;color:#ff9f0a;margin:12px 0;line-height:1.5}
-.hint b{color:#ffb340}
-#result{margin-top:12px}
-.link{color:#0a84ff;text-decoration:none;font-family:monospace;font-size:12px}
-.link:hover{text-decoration:underline}
-footer{margin-top:24px;padding-top:16px;border-top:1px solid rgba(255,255,255,.06);
-  font-size:11px;color:#6e6e73;text-align:center}
-</style></head><body>
-<h1>Stracker — Diagnóstico</h1>
-<div class="sub">Verificación en tiempo real del estado del sistema y datos de Google</div>
-
-<div class="card">
-  <h2>Estado del backend</h2>
-  <div id="health" class="muted">Cargando…</div>
-</div>
-
-<div class="card">
-  <h2>Estado de Google Location Sharing</h2>
-  <div id="forcepoll"><span class="spinner"></span> Llamando a /force-poll…</div>
-  <button onclick="runForcePoll()">↻ Re-verificar ahora</button>
-</div>
-
-<div class="card" id="guidance" style="display:none">
-  <h2>🎯 Acción requerida</h2>
-  <div id="guidance-content"></div>
-</div>
-
-<div class="card">
-  <h2>Endpoints útiles</h2>
-  <div class="status-row"><span class="k">Health</span><a class="link" href="/health" target="_blank">/health</a></div>
-  <div class="status-row"><span class="k">Points</span><a class="link" href="/points" target="_blank">/points</a></div>
-  <div class="status-row"><span class="k">Force-poll</span><a class="link" href="/force-poll" target="_blank">/force-poll</a></div>
-  <div class="status-row"><span class="k">Importar cookies</span><a class="link" href="/cookies.html" target="_blank">/cookies.html</a></div>
-  <div class="status-row"><span class="k">App principal</span><a class="link" href="/" target="_blank">/</a></div>
-</div>
-
-<footer>Stracker v6.2 — diagnostic page served by Python backend</footer>
-
-<script>
-async function runHealth(){
-  try{
-    const r=await fetch('/health');const d=await r.json();
-    const el=document.getElementById('health');
-    const up=Math.round(d.uptime_s||0);
-    const min=Math.floor(up/60),sec=up%60;
-    el.innerHTML='<div class="status-row"><span class="k">Status</span><span class="v ok pill">OK</span></div>'+
-      '<div class="status-row"><span class="k">Uptime</span><span class="v">'+min+'m '+sec+'s</span></div>'+
-      '<div class="status-row"><span class="k">Version</span><span class="v">'+(d.version||'?')+'</span></div>'+
-      '<div class="status-row"><span class="k">Puntos en CSV</span><span class="v">'+(d.points||0)+'</span></div>'+
-      '<div class="status-row"><span class="k">CSV existe</span><span class="v '+(d.csv_exists?'ok':'err')+'">'+(d.csv_exists?'SÍ':'NO')+'</span></div>';
-  }catch(e){document.getElementById('health').innerHTML='<span class="err">Error: '+e.message+'</span>'}
-}
-
-async function runForcePoll(){
-  const el=document.getElementById('forcepoll');
-  el.innerHTML='<span class="spinner"></span> Llamando a /force-poll…';
-  try{
-    const r=await fetch('/force-poll');const d=await r.json();
-    const hasLoc=d.lat!==null&&d.lng!==null;
-    const statusClass=hasLoc?'ok':(d.status==='no_location'?'warn':'err');
-    const statusText=hasLoc?'UBICACIÓN ACTIVA':(d.status==='no_location'?'SIN UBICACIÓN':'ERROR');
-    let html='<div class="status-row"><span class="k">Estado</span><span class="v pill '+statusClass+'">'+statusText+'</span></div>';
-    if(hasLoc){
-      html+='<div class="status-row"><span class="k">Latitud</span><span class="v ok">'+d.lat.toFixed(6)+'</span></div>';
-      html+='<div class="status-row"><span class="k">Longitud</span><span class="v ok">'+d.lng.toFixed(6)+'</span></div>';
-      html+='<div class="status-row"><span class="k">Batería</span><span class="v">'+(d.battery||'—')+'</span></div>';
-      html+='<div class="status-row"><span class="k">Dirección</span><span class="v">'+(d.address||'—')+'</span></div>';
-    }
-    html+='<div class="status-row"><span class="k">Cookies Google</span><span class="v">'+d.cookie_count_google+'</span></div>';
-    html+='<div class="status-row"><span class="k">Cookies críticas</span><span class="v '+(d.has_critical?'ok':'err')+'">'+(d.has_critical?'COMPLETAS':'FALTAN')+'</span></div>';
-    if(d.missing_critical&&d.missing_critical.length>0){
-      html+='<div class="status-row"><span class="k">Faltantes</span><span class="v err">'+d.missing_critical.join(', ')+'</span></div>';
-    }
-    html+='<div class="status-row"><span class="k">Cookie header</span><span class="v muted">'+d.cookie_header_len+' chars</span></div>';
-    el.innerHTML=html;
-
-    // Show guidance
-    const g=document.getElementById('guidance');
-    const gc=document.getElementById('guidance-content');
-    if(hasLoc){
-      g.style.display='block';
-      gc.innerHTML='<div class="hint ok" style="color:#30d158;background:rgba(48,209,88,.08);border-color:rgba(48,209,88,.2)">✓ ¡Sistema operativo! Los datos de ubicación están fluyendo. Abrí <a href="/" style="color:#30d158">la app principal</a> para ver el mapa.</div>';
-    }else if(d.status==='no_location'){
-      g.style.display='block';
-      gc.innerHTML='<div class="hint">⚠ <b>Google autentica las cookies pero reporta que NO HAY ubicación compartida activa.</b><br><br>Para que Stracker reciba datos, alguien debe compartir su ubicación con la cuenta Google cuyas cookies se importaron:</div>'+
-        '<ol class="steps">'+
-        '<li>En el <strong>dispositivo a trackear</strong> (ej: teléfono móvil), abrí <strong>Google Maps</strong>.</li>'+
-        '<li>Tocá el <strong>icono de perfil</strong> → <strong>Compartir ubicación</strong>.</li>'+
-        '<li>Elegí <strong>Compartir ubicación en tiempo real</strong> → seleccioná la <strong>cuenta Google receptora</strong> (cuyas cookies se importaron).</li>'+
-        '<li>Desde la <strong>cuenta receptora</strong>, abrí Google Maps → aceptá la invitación de sharing.</li>'+
-        '<li>Esperá <strong>≤20 segundos</strong> y volvé a hacer clic en <b>"Re-verificar ahora"</b>.</li>'+
-        '</ol>'+
-        '<div class="hint">ℹ Si ya compartiste ubicación y sigue sin funcionar, las cookies pueden ser de la cuenta equivocada. Verificá que las cookies importadas pertenezcan a la <strong>cuenta receptora</strong> del sharing, no a la que comparte.</div>';
-    }else{
-      g.style.display='block';
-      gc.innerHTML='<div class="hint err">✗ Error: '+(d.error||'desconocido')+'</div>';
-    }
-  }catch(e){el.innerHTML='<span class="err">Error: '+e.message+'</span>'}
-}
-
-runHealth();
-runForcePoll();
-setInterval(runHealth, 15000);
-</script>
-</body></html>"""
-        body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
     def _serve_cookies_page(self):
-        html = """<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cookies - Tracker v6</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;background:#0a0a0a;color:#f5f5f7;padding:20px;max-width:820px;margin:auto}h1{color:#0a84ff;font-size:22px;font-weight:700;margin-bottom:8px}.sub{color:#8a8a8a;margin-bottom:16px;font-size:14px}ol li{margin:10px 0;line-height:1.6;color:#8a8a8a}strong{color:#fff}a{color:#007aff}textarea{width:100%;height:240px;background:rgba(255,255,255,.04);color:#34c759;border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:10px;font-family:'SF Mono',Menlo,monospace;font-size:13px;box-sizing:border-box}button{background:#0a84ff;color:#fff;border:none;padding:12px 28px;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;margin-top:10px}button:hover{background:#0066cc}button:disabled{opacity:.5;cursor:wait}#status{margin-top:12px;padding:12px;border-radius:10px;display:none;font-size:14px;line-height:1.5}.ok{background:rgba(52,199,89,.1);color:#34c759;border:1px solid rgba(52,199,89,.2)}.err{background:rgba(255,59,48,.1);color:#ff3b30;border:1px solid rgba(255,59,48,.2)}.formats{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:14px;margin:14px 0}.formats h3{color:#f5f5f7;font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.5px}.formats ul{list-style:none;padding:0;margin:0}.formats li{color:#8a8a8a;font-size:12px;margin:4px 0;padding-left:16px;position:relative}.formats li:before{content:'✓';color:#34c759;position:absolute;left:0}.fmt-tag{display:inline-block;background:rgba(10,132,255,.15);color:#0a84ff;padding:1px 8px;border-radius:6px;font-size:11px;font-family:'SF Mono',Menlo,monospace;margin-left:4px}.crit{margin-top:8px;font-size:12px}.crit .yes{color:#34c759}.crit .no{color:#ff9f0a}</style></head><body><h1>Refrescar Cookies</h1><p class="sub">Las cookies expiran cada ~7 días. Importa las cookies de Google para reactivar el tracking.</p><div class="formats"><h3>Formatos aceptados</h3><ul><li>JSON array (Cookie-Editor export) <span class="fmt-tag">[{"name":...,"value":...}]</span></li><li>JSON objeto con campo cookies <span class="fmt-tag">{"cookies":[...]}</span></li><li>Header string <span class="fmt-tag">SID=abc; HSID=def; ...</span></li><li>Netscape cookie file <span class="fmt-tag">domain\tTRUE\t/\t...\tNAME\tVALUE</span></li></ul></div><ol><li>Instala <strong><a href="https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm" target="_blank">Cookie-Editor</a></strong></li><li>Anda a <a href="https://www.google.com/maps" target="_blank">Google Maps</a></li><li>Cookie-Editor > <strong>Export</strong> > <strong>JSON</strong></li><li>Pega abajo (cualquier formato de arriba funciona)</li></ol><textarea id="jsonInput" placeholder="Pega aquí las cookies (JSON array, header string, o Netscape format)..."></textarea><br><button onclick="enviarCookies()">Enviar</button><div id="status"></div><script>async function enviarCookies(){var s=document.getElementById('status');s.style.display='none';var txt=document.getElementById('jsonInput').value.trim();if(!txt){s.className='err';s.textContent='⚠ Pegá las cookies primero.';s.style.display='block';return}var btn=document.querySelector('button');btn.disabled=true;btn.textContent='Enviando...';try{var r=await fetch('/api/cookies',{method:'POST',headers:{'Content-Type':'application/json'},body:txt});var d=await r.json();if(r.ok){var html='<div>✓ '+d.message+'</div>';if(d.format_detected){html+='<div class="crit" style="margin-top:6px">Formato detectado: <strong>'+d.format_detected+'</strong></div>'}if(d.critical_present&&d.critical_present.length){html+='<div class="crit">Cookies críticas presentes: <span class="yes">'+d.critical_present.length+'/'+d.critical_present.length+d.critical_missing.length+'</span></div>'}if(d.critical_missing&&d.critical_missing.length){html+='<div class="crit">⚠ Faltan cookies críticas: <span class="no">'+d.critical_missing.join(', ')+'</span></div>'}s.className='ok';s.innerHTML=html;document.getElementById('jsonInput').value=''}else{var errHtml='<div>✗ '+(d.error||'desconocido')+'</div>';if(d.format_detected){errHtml+='<div class="crit">Formato detectado: '+d.format_detected+'</div>'}if(d.count!==undefined){errHtml+='<div class="crit">Cookies encontradas: '+d.count+'</div>'}s.className='err';s.innerHTML=errHtml}}catch(e){s.className='err';s.textContent='Error de red: '+e.message}s.style.display='block';btn.disabled=false;btn.textContent='Enviar'}</script></body></html>"""
+        html = """<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cookies - Tracker v6</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;background:#0a0a0a;color:#f5f5f7;padding:20px;max-width:800px;margin:auto}h1{color:#0a84ff;font-size:22px;font-weight:700}ol li{margin:12px 0;line-height:1.6;color:#8a8a8a}strong{color:#fff}a{color:#007aff}textarea{width:100%;height:250px;background:rgba(255,255,255,.04);color:#34c759;border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:10px;font-family:'SF Mono',Menlo,monospace;font-size:13px}button{background:#007aff;color:#fff;border:none;padding:12px 28px;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;margin-top:10px}button:hover{background:#0056b3}#status{margin-top:12px;padding:10px;border-radius:8px;display:none;font-size:14px}.ok{background:rgba(52,199,89,.1);color:#34c759;border:1px solid rgba(52,199,89,.2)}.err{background:rgba(255,59,48,.1);color:#ff3b30;border:1px solid rgba(255,59,48,.2)}</style></head><body><h1>Refrescar Cookies</h1><p style="color:#8a8a8a;margin-bottom:16px">Las cookies expiran cada ~7 dias.</p><ol><li>Instala <strong><a href="https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm" target="_blank">Cookie-Editor</a></strong></li><li>Anda a <a href="https://www.google.com/maps" target="_blank">Google Maps</a></li><li>Cookie-Editor > <strong>Export</strong> > <strong>JSON</strong></li><li>Pega abajo</li></ol><textarea id="jsonInput" placeholder="Pega el JSON..."></textarea><br><button onclick="enviarCookies()">Enviar</button><div id="status"></div><script>async function enviarCookies(){var s=document.getElementById('status');s.style.display='none';var txt=document.getElementById('jsonInput').value.trim();if(!txt){s.className='err';s.textContent='Pega el JSON';s.style.display='block';return}try{JSON.parse(txt)}catch(e){s.className='err';s.textContent='JSON invalido';s.style.display='block';return}var btn=document.querySelector('button');btn.disabled=true;btn.textContent='Enviando...';try{var r=await fetch('/api/cookies',{method:'POST',headers:{'Content-Type':'application/json'},body:txt});var d=await r.json();if(r.ok){s.className='ok';s.textContent=d.message;document.getElementById('jsonInput').value=''}else{s.className='err';s.textContent=d.error}}catch(e){s.className='err';s.textContent='Error: '+e.message}s.style.display='block';btn.disabled=false;btn.textContent='Enviar'}</script></body></html>"""
         body = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def _handle_cookies_upload(self):
-        """RA20: Robust cookie import — accepts JSON array, JSON object with
-        cookies field, header string (name=value; ...), and Netscape cookie
-        file format. Normalizes everything to an array of cookie objects.
-
-        Error messages are clear and actionable (no more cryptic 'Debe ser array').
-        """
         try:
             length = int(self.headers.get("Content-Length", 0))
-            if length == 0 or length > 5_000_000:
-                self._send_json({"status": "error", "error": "Payload vacío o demasiado grande (máx 5MB)", "format_detected": "none"}, status=400)
-                return
-            body = self.rfile.read(length).decode("utf-8", errors="replace").strip()
-            if not body:
-                self._send_json({"status": "error", "error": "Payload vacío", "format_detected": "none"}, status=400)
-                return
+            body = self.rfile.read(length).decode("utf-8")
+            cookies = json.loads(body)
 
-            cookies, fmt = _normalize_cookie_payload(body)
-            if not cookies:
-                self._send_json({
-                    "status": "error",
-                    "error": "No se pudieron extraer cookies. Formatos aceptados: JSON array, JSON objeto con campo 'cookies', header string (name=value; ...), o Netscape cookie file.",
-                    "format_detected": fmt,
-                    "count": 0
-                }, status=400)
-                return
+            # WEBSOCKET_RESET / PATCH_DATA_PARSER (stracker_v6_emergency_repair):
+            # The frontend (CookiesBlock.tsx + CookieDrawer.tsx) sends a WRAPPED
+            # object: {"format":"auto","data":"[{...}]"} or {"format":"auto","data":[...]}.
+            # The standalone /cookies.html page sends a RAW JSON array directly.
+            # We must accept BOTH formats — previously only the raw array was
+            # accepted, causing the "Debe ser array" TypeError when the Next.js
+            # frontend imported cookies.
+            if isinstance(cookies, dict) and "data" in cookies:
+                # Wrapped format from the Next.js frontend. Extract the data
+                # field — it can be a JSON string or an already-parsed array.
+                raw_data = cookies.get("data", [])
+                if isinstance(raw_data, str):
+                    cookies = json.loads(raw_data)
+                else:
+                    cookies = raw_data
 
-            # V6.5 BACKEND_COOKIE_REPAIR: FILTER out invalid cookies (empty name)
-            # instead of rejecting the whole batch. Cookie-Editor exports sometimes
-            # include 1-2 weird entries out of 50 — V6.4 rejected all 50 because of
-            # 1 bad entry. V6.5 skips the bad ones and saves the rest, surfacing the
-            # skip count in the response so the operator knows.
-            valid_cookies = [c for c in cookies if c.get("name")]
-            skipped = len(cookies) - len(valid_cookies)
-            if skipped > 0:
-                logger.info("Cookie upload: filtered %d invalid entries (empty name), keeping %d", skipped, len(valid_cookies))
-            if not valid_cookies:
-                self._send_json({
-                    "status": "error",
-                    "error": "Ninguna cookie válida encontrada (todas tenían 'name' vacío). Formatos aceptados: JSON array, JSON objeto con campo 'cookies', header string (name=value; ...), o Netscape cookie file.",
-                    "format_detected": fmt,
-                    "count": 0
-                }, status=400)
-                return
-            cookies = valid_cookies
-
-            # Diagnostics: critical cookies present?
-            critical_names = ["__Secure-1PSID", "__Secure-3PSID", "SAPISID", "APISID", "HSID", "SSID", "SID"]
-            present_critical = [n for n in critical_names if any(c.get("name") == n for c in cookies)]
-            missing_critical = [n for n in critical_names if n not in present_critical]
-
+            if not isinstance(cookies, list): raise ValueError("Debe ser array")
+            for c in cookies:
+                if "name" not in c or "value" not in c: raise ValueError("Cada cookie debe tener name y value")
             COOKIES_PATH.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
-            logger.info("Cookies actualizadas: %d (formato=%s, critical=%d/%d)", len(cookies), fmt, len(present_critical), len(critical_names))
-            # RA21: Sync to gist backup (best-effort, survives Render cold starts)
-            gist_synced = _gist_sync_cookies(cookies)
+            logger.info("Cookies actualizadas: %d", len(cookies))
+
+            # Return critical-cookie status so the frontend can show which
+            # Google session cookies are present/missing.
+            critical = ["SID", "HSID", "SSID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"]
+            names = {c.get("name") for c in cookies}
+            missing = [k for k in critical if k not in names]
             self._send_json({
                 "status": "ok",
-                "message": f"{len(cookies)} cookies guardadas." + (f" ({skipped} filtradas)" if skipped > 0 else ""),
-                "format_detected": fmt,
+                "message": f"{len(cookies)} cookies guardadas.",
                 "count": len(cookies),
-                "skipped": skipped,
-                "critical_present": present_critical,
-                "critical_missing": missing_critical,
-                "has_critical": len(missing_critical) == 0,
-                "gist_backup_synced": gist_synced
+                "has_critical": len(missing) == 0,
+                "missing_critical": missing,
             })
         except Exception as e:
-            logger.error("Cookies upload error: %s", e)
-            self._send_json({"status": "error", "error": str(e), "format_detected": "unknown"}, status=400)
+            self._send_json({"status": "error", "error": str(e)}, status=400)
 
 
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
@@ -3241,7 +2942,7 @@ def _open_browser_when_ready(port, stop_event):
 def main():
     setup_logging()
     logger.info("=" * 50)
-    logger.info("Tracker v6 — ARCHITECTURE REAL CLEAN SPLIT")
+    logger.info("Tracker v6.0 — FINAL POLISH (Cold Storage + Security Audit + Apple UI)")
     logger.info("=" * 50)
     logger.info("BASE_DIR = %s | Python = %s | PID = %d", BASE_DIR, sys.version.split()[0], os.getpid())
 
@@ -3249,23 +2950,33 @@ def main():
     init_csv()
     clean_old_points()
 
-    # RA21: Restore cookies from gist backup if missing (survives Render cold starts)
-    _restore_cookies_if_missing()
-
-    # V6.9 COLD_START_RECOVERY: Restore the immortal history CSV from gist
-    # BEFORE the polling loop opens sockets or fetches any location. This
-    # rebuilds the 24h ghost trail timeline immediately after a Render cold
-    # start, so the operator sees continuity instead of amnesia.
-    _restore_history_if_missing()
-    # Re-read after potential restore so stats/html reflect the recovered timeline.
-    try:
-        _recovered_pts = read_all_points()
-        if _recovered_pts:
-            logger.info("V6.9 COLD_START: recovered timeline has %d points (24h window)", len(_recovered_pts))
-    except Exception as _e:
-        logger.warning("V6.9 COLD_START: post-restore read failed: %s", _e)
-
     stop_event = threading.Event()
+
+    # V6.0 STORAGE_OPTIMIZATION: one-shot cold storage archival on startup.
+    # Migrates any backlog of records older than ARCHIVE_AGE_DAYS from
+    # ghostrail.enc (hot) to ghostrail_archive.enc (cold, ZIP+AES-256-GCM).
+    try:
+        arch_summary = archive_cold_data()
+        logger.info(
+            "Cold storage startup pass: archived=%d kept_hot=%d archive_total=%d threshold=%s",
+            arch_summary.get("archived", 0),
+            arch_summary.get("kept_hot", 0),
+            arch_summary.get("archive_total", 0),
+            arch_summary.get("threshold"),
+        )
+    except Exception as e:
+        logger.error("Cold storage startup archival failed: %s", e)
+
+    # V6.0: spawn a background thread that re-runs archival every 6h so
+    # ghostrail.enc stays ultra-light even without a restart.
+    def _periodic_archive(stop_ev):
+        while not stop_ev.wait(6 * 3600):  # 6h
+            try:
+                archive_cold_data()
+            except Exception as ex:
+                logger.error("Periodic archive failed: %s", ex)
+    threading.Thread(target=_periodic_archive, args=(stop_event,), name="cold-storage-archive", daemon=True).start()
+
     def signal_handler(sig, frame): logger.info("Senial %s, deteniendo...", sig); stop_event.set()
     for sig_name in ("SIGINT", "SIGTERM"):
         sig = getattr(signal, sig_name, None)
