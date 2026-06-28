@@ -31,6 +31,10 @@ interface TimelineBarProps {
   onScrub: (index: number) => void
   /** Called when the user clicks LIVE to return to real-time. */
   onLive: () => void
+  /** V6.10 STALE_DATA_EXPOSURE — when true (data age >10 min), the mode
+   * indicator switches from "Tiempo Real" (Apple blue) to "Señal Latente"
+   * (amber/orange) to expose that the signal is stale, not real-time. */
+  stale?: boolean
 }
 
 export function TimelineBar({
@@ -39,6 +43,7 @@ export function TimelineBar({
   scrubbing,
   onScrub,
   onLive,
+  stale = false,
 }: TimelineBarProps) {
   const max = Math.max(0, points.length - 1)
   const value = scrubIndex ?? max
@@ -99,16 +104,21 @@ export function TimelineBar({
     >
       {/* Header row: mode indicator + timestamp + LIVE button */}
       <div className="flex items-center gap-3 mb-3">
-        {/* Mode indicator: Tiempo Real (live) vs Histórico (scrubbing) */}
+        {/* V6.10 STALE_DATA_EXPOSURE — Mode indicator:
+            - scrubbing → "Histórico" (white)
+            - stale (data age >10 min) && !scrubbing → "Señal Latente" (amber)
+            - live (fresh data) → "Tiempo Real" (Apple blue) */}
         <div
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-[1.02] active:scale-[0.98]"
           style={{
-            background: scrubbing ? 'rgba(255,255,255,.08)' : 'rgba(10,132,255,.12)',
-            border: `1px solid ${scrubbing ? 'rgba(255,255,255,.15)' : 'rgba(10,132,255,.3)'}`,
+            background: scrubbing ? 'rgba(255,255,255,.08)' : stale ? 'rgba(255,170,30,.12)' : 'rgba(10,132,255,.12)',
+            border: `1px solid ${scrubbing ? 'rgba(255,255,255,.15)' : stale ? 'rgba(255,170,30,.3)' : 'rgba(10,132,255,.3)'}`,
           }}
         >
           {scrubbing ? (
             <StepBack size={10} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.9)' }} />
+          ) : stale ? (
+            <Radio size={10} strokeWidth={1.5} style={{ color: 'rgba(255,170,30,.95)' }} />
           ) : (
             <Radio size={10} strokeWidth={1.5} style={{ color: 'rgba(10,132,255,.95)' }} />
           )}
@@ -117,20 +127,20 @@ export function TimelineBar({
             style={{
               fontSize: 12,
               letterSpacing: '0.08em',
-              color: scrubbing ? 'rgba(255,255,255,.9)' : 'rgba(10,132,255,.95)',
+              color: scrubbing ? 'rgba(255,255,255,.9)' : stale ? 'rgba(255,170,30,.95)' : 'rgba(10,132,255,.95)',
             }}
           >
-            {scrubbing ? 'Histórico' : 'Tiempo Real'}
+            {scrubbing ? 'Histórico' : stale ? 'Señal Latente' : 'Tiempo Real'}
           </span>
-          {/* Live pulse dot */}
+          {/* Live pulse dot — amber when stale, blue when live, hidden when scrubbing */}
           {!scrubbing && (
             <span
               style={{
                 width: 5,
                 height: 5,
                 borderRadius: '50%',
-                background: 'rgba(10,132,255,.95)',
-                boxShadow: '0 0 6px rgba(10,132,255,.6)',
+                background: stale ? 'rgba(255,170,30,.95)' : 'rgba(10,132,255,.95)',
+                boxShadow: `0 0 6px ${stale ? 'rgba(255,170,30,.6)' : 'rgba(10,132,255,.6)'}`,
                 animation: 'livePulse 1.8s ease-in-out infinite',
               }}
             />

@@ -157,6 +157,11 @@ interface SnapshotData {
     [k: string]: any
   } | null
   ghostrail_pts: { lat: number; lng: number; t?: string; zone?: string }[]
+  // V6.10 STALE_DATA_EXPOSURE — raw timestamp of the last point received from
+  // Google's Location Sharing payload. Used to compute data age and switch the
+  // UI from "Tiempo Real" to "Señal Latente / Caché" when >10 min stale.
+  last_update?: string | null
+  device_label?: string
   _meta: {
     tick: number
     event_seq: number
@@ -770,6 +775,49 @@ const DEVICE_PROFILES: DeviceProfile[] = [
 const DEVICE_HISTORY_KEY = 'stracker_device_history'
 const DEVICE_HISTORY_MAX = 60 // keep last 60 samples (~3 min @ 3s poll)
 
+// V6.10 EPHEMERAL_TOKEN_COLLAPSE — persistent "primary device" profile.
+// Google's Location Sharing RPC rotates the obfuscated device token on
+// every session (ziQI → U-AE → ymQ0 → ...). The V6.8 inference engine
+// resolves the HARDWARE profile (Samsung A16 / TCL 408) from telemetry
+// fingerprints, but when confidence is low it falls back to
+// "Desconocido · XXXX" — and XXXX changes every rotation, fragmenting
+// the operator's mental model of "which device am I tracking?"
+//
+// V6.10 fix: once the inference engine reaches high confidence (≥0.62)
+// OR the static DEVICE_MAP matches a known token, we PERSIST that label
+// to localStorage as the "primary device". On all subsequent polls —
+// even when Google rotates to a new opaque token and inference confidence
+// temporarily drops — cleanDeviceLabel() returns the stored primary
+// device instead of "Desconocido · XXXX". The hardware doesn't change
+// just because Google's session token did.
+const PRIMARY_DEVICE_KEY = 'stracker_primary_device'
+const PRIMARY_DEVICE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+
+interface PrimaryDeviceRecord {
+  label: string        // "Samsung A16" | "TCL 408" | "Dispositivo Principal"
+  pinnedAt: number     // epoch ms — when the primary was last confirmed
+  lastRawToken?: string // last 4 chars of the raw token that pinned it (audit)
+}
+
+function readPrimaryDevice(): PrimaryDeviceRecord | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(PRIMARY_DEVICE_KEY)
+    if (!raw) return null
+    const rec: PrimaryDeviceRecord = JSON.parse(raw)
+    // Expire after 7 days of no confirmation (device genuinely changed).
+    if (Date.now() - rec.pinnedAt > PRIMARY_DEVICE_MAX_AGE_MS) return null
+    return rec
+  } catch { return null }
+}
+
+function writePrimaryDevice(rec: PrimaryDeviceRecord) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(PRIMARY_DEVICE_KEY, JSON.stringify(rec))
+  } catch { /* localStorage full or unavailable */ }
+}
+
 // Persist a telemetry sample to localStorage for historical comparison.
 function pushTelemetrySample(sample: TelemetrySample) {
   if (typeof window === 'undefined') return
@@ -900,50 +948,92 @@ function inferDeviceFromTelemetry(history: TelemetrySample[]): {
 }
 
 // V6.8 cleanDeviceLabel — resolves the device label for display.
-// Priority chain (V6.8 reordered):
-//   (1) null / 'Desconocido' / empty → '—' (em dash hides noise)
-//   (2) telemetry-inferred label (V6.8 DYNAMIC_DEVICE_INFERENCE) — when the
-//       live fingerprint matches Samsung A16 / TCL 408 with confidence ≥0.62
-//   (3) substring match against DEVICE_MAP (fast-path fallback for known
-//       Google tokens like 'iyAM' / 'jgDg')
+// V6.10 EPHEMERAL_TOKEN_COLLAPSE: Google rotates the obfuscated device token
+// on every session. The hardware doesn't change. This function now persists
+// the first high-confidence resolution (inferred OR static-map match) to
+// localStorage as the "primary device", and returns that stored label for
+// ALL subsequent obfuscated tokens — collapsing the ephemeral token noise
+// into a single unified entity.
+//
+// Priority chain (V6.10 reordered):
+//   (1) null / 'Desconocido' / empty → check primary device cache, else '—'
+//   (2) telemetry-inferred label (V6.8) with confidence ≥0.62 → PIN as
+//       primary device, return inferred label
+//   (3) substring match against DEVICE_MAP (known tokens) → PIN as primary,
+//       return alias
 //   (4) clean model name (iPhone16,2 / Pixel 8 Pro / SM-S918B) → passthrough
-//   (5) unrecognized obfuscated ID (16+ chars, no spaces) → 'Desconocido · XXXX'
-//       (last 4 digits as a stable fingerprint hint, prefixed with
-//       'Desconocido' so the operator knows it's not a clean match)
+//   (5) unrecognized obfuscated ID (16+ chars) → check primary device cache;
+//       if a primary exists, return it (collapse the ephemeral token);
+//       else 'Desconocido · XXXX' (last 4 digits, first-run fallback)
 function cleanDeviceLabel(label: string, inferred?: { label: string; confidence: number; anomaly: boolean } | null): string {
+  // V6.10: Helper — persist a resolved label as the primary device.
+  function pinPrimary(resolved: string, rawToken?: string) {
+    writePrimaryDevice({
+      label: resolved,
+      pinnedAt: Date.now(),
+      lastRawToken: rawToken ? rawToken.slice(-4) : undefined,
+    })
+  }
+
   if (!label || label === 'Desconocido') {
     // V6.8: even when the raw label is missing, the inference engine may
     // still resolve a profile from the telemetry fingerprint alone.
-    if (inferred && inferred.confidence >= 0.62) return inferred.label
+    if (inferred && inferred.confidence >= 0.62) {
+      pinPrimary(inferred.label)
+      return inferred.label
+    }
+    // V6.10: fall back to the persisted primary device (collapses token gaps).
+    const primary = readPrimaryDevice()
+    if (primary) return primary.label
     return '—'
   }
+
   // V6.8 PRIORITY 1: telemetry-based inference wins for UNRECOGNIZED raw IDs.
-  // If the raw label is a 16+ char obfuscated Google token AND the inference
-  // engine has a high-confidence match, surface the inferred alias. This is
-  // the core of the V6.8 directive: "Reemplazar la asignación estática del
-  // token por una función de inferencia comparativa".
   const isObfuscatedId = label.length >= 16 && !/\s/.test(label) && /^[A-Za-z0-9_-]+$/.test(label)
   if (isObfuscatedId && inferred && inferred.confidence >= 0.62) {
+    // V6.10: pin the inferred hardware profile as the primary device.
+    pinPrimary(inferred.label, label)
     return inferred.label
   }
-  // V6.6 PRIORITY 2: substring match against the static DEVICE_MAP. This is
-  // still the fast-path for known Google tokens (high-confidence exact match
-  // on 'iyAM' / 'jgDg'). The static map is kept as a deterministic fallback
-  // because the inference engine needs ≥5 samples to produce a fingerprint.
+
+  // V6.6 PRIORITY 2: substring match against the static DEVICE_MAP.
   for (const entry of DEVICE_MAP) {
-    if (label.includes(entry.substring)) return entry.alias
+    if (label.includes(entry.substring)) {
+      // V6.10: pin the matched alias as the primary device.
+      pinPrimary(entry.alias, label)
+      return entry.alias
+    }
   }
+
   // V6.8 PRIORITY 3: inference-only fallback for obfuscated IDs that DON'T
-  // match any static token but DO match a telemetry profile.
+  // match any static token but DO match a telemetry profile (lower bar).
   if (isObfuscatedId && inferred && inferred.confidence >= 0.5) {
+    pinPrimary(inferred.label, label)
     return inferred.label
   }
+
+  // V6.10 EPHEMERAL_TOKEN_COLLAPSE — the core fix.
   // Google obfuscated IDs: 16+ chars, no spaces, mostly alphanumeric.
-  // Show 'Desconocido · XXXX' (last 4 digits) so the operator sees a stable
-  // fingerprint hint instead of a raw 22-char string.
+  // The token rotates every session but the HARDWARE is the same. If we've
+  // already pinned a primary device (from a prior high-confidence poll),
+  // return that label instead of showing "Desconocido · XXXX" with a
+  // different XXXX each time. This collapses the ephemeral token noise.
   if (isObfuscatedId) {
+    const primary = readPrimaryDevice()
+    if (primary) {
+      // Primary device exists — return the persisted hardware label.
+      // The operator sees "Samsung A16" (or whatever was pinned) consistently
+      // across ALL token rotations, not "Desconocido · ymQ0" then "· U-AE".
+      return primary.label
+    }
+    // No primary pinned yet (first run, or inference hasn't reached threshold).
+    // Show the last-4 fingerprint as a temporary hint. As soon as the inference
+    // engine accumulates ≥5 samples and reaches confidence ≥0.62, the label
+    // will pin to the hardware profile and stay there.
     return `Desconocido · ${label.slice(-4)}`
   }
+
+  // Clean model name (iPhone16,2 / Pixel 8 Pro / SM-S918B) — passthrough.
   return label
 }
 
@@ -1024,14 +1114,26 @@ function useRoutedTrail(rawPoints: { lat: number; lng: number; t?: string }[]): 
   const isRoutingRef = useRef(false)
 
   useEffect(() => {
-    if (!rawPoints || rawPoints.length < 2) {
+    // V6.8 GHOST_TRAIL_THRESHOLD — when there's exactly 1 valid raw point
+    // (device stationary, single ping in the 24h window), return it as a
+    // single-element array so the GhostTrail component can render a
+    // CircleMarker (stationary trace) instead of bailing on length < 2.
+    // The previous implementation returned [] here, which caused the trail
+    // to vanish entirely for single-point histories.
+    if (!rawPoints || rawPoints.length === 0) {
       requestAnimationFrame(() => setRoutedPoints([]))
       return
     }
 
     const validPts = rawPoints.filter(p => p.lat != null && p.lng != null && isFinite(p.lat) && isFinite(p.lng))
-    if (validPts.length < 2) {
+    if (validPts.length === 0) {
       requestAnimationFrame(() => setRoutedPoints([]))
+      return
+    }
+    // V6.8: single valid point → return as single-element array. The
+    // GhostTrail component detects length === 1 and renders a CircleMarker.
+    if (validPts.length === 1) {
+      requestAnimationFrame(() => setRoutedPoints([[validPts[0].lat, validPts[0].lng]]))
       return
     }
 
@@ -2134,10 +2236,17 @@ export default function TrackerView() {
       return true
     }
 
-    // ── SPATIAL DEDUP: within ~5m ──
+    // ── SPATIAL DEDUP: within ~2m (V6.10 GHOST_TRAIL_FORCED_RENDER) ──
+    // V6.10 lowered this from 0.00005° (~5.5m) to 0.000018° (~2m) to match
+    // the V6.9 backend's DUPLICATE_MIN_METERS=2. The previous 5.5m threshold
+    // was a SMOOTHING FILTER that discarded micro-movements (jitter) the
+    // backend had force-logged at 0.0 km/h — hiding the in-place permanence
+    // signature. With 2m, all V6.9 jitter points (2-5m deltas) pass through
+    // and the polyline connects them directly, showing the real spatial
+    // pattern of the device's micro-activity inside a closed perimeter.
     function isNearExisting(p: { lat: number; lng: number }, existing: { lat: number; lng: number }[]): boolean {
       return existing.some(ep =>
-        Math.abs(ep.lat - p.lat) < 0.00005 && Math.abs(ep.lng - p.lng) < 0.00005
+        Math.abs(ep.lat - p.lat) < 0.000018 && Math.abs(ep.lng - p.lng) < 0.000018
       )
     }
 
@@ -3432,7 +3541,39 @@ export default function TrackerView() {
     }
   }, [pyState?.location?.lat, pyState?.location?.lng])
 
-  const screen = deriveScreenState(pyState)
+  // V6.10 STALE_DATA_EXPOSURE — audit the raw Google payload timestamp.
+  // The backend's `last_update` field carries the ISO timestamp of the most
+  // recent point received from Google's Location Sharing RPC. We compute the
+  // age in minutes and use it to switch the UI from "Tiempo Real" to
+  // "Señal Latente / Caché" when the data is >10 min old, and to force the
+  // Pantalla ON indicator OFF when >15 min old (radio silence = no claim
+  // of activity).
+  // NOTE: computed here (before `screen`) so isRadioSilence is available
+  // for the screen-state override below.
+  const dataAgeMin = useMemo(() => {
+    const rawTs = snapshot?.last_update ?? null
+    if (rawTs) {
+      const ms = new Date(rawTs).getTime()
+      if (isFinite(ms)) return Math.max(0, (Date.now() - ms) / 60000)
+    }
+    if (ultimaConexionTs != null) {
+      return Math.max(0, (Date.now() - ultimaConexionTs) / 60000)
+    }
+    return null
+  }, [snapshot?.last_update, ultimaConexionTs])
+
+  const isStaleSignal = dataAgeMin != null && dataAgeMin > 10
+  const isRadioSilence = dataAgeMin != null && dataAgeMin > 15
+
+  const screenRaw = deriveScreenState(pyState)
+  // V6.10 STALE_DATA_EXPOSURE — force Pantalla OFF when data is >15 min old.
+  // Radio silence means the device hasn't emitted a real signal in 15+ min.
+  // We must NOT claim screen activity based on inferred signals (movement,
+  // network, battery) when the source is silent — those inferences were
+  // derived from the stale payload itself and cannot be trusted.
+  const screen = isRadioSilence
+    ? { ...screenRaw, isOn: false, label: `OFF · ${ultimaConexionLabel || 'sin señal'}`, shortLabel: 'OFF', confidence: 0, source: 'radio_silence' }
+    : screenRaw
   const network = deriveNetwork(pyState)
   const placeBadge = derivePlaceBadge(pyState)
   const locationLabel = pyState?.location?.label_primary || ''
@@ -3563,6 +3704,10 @@ export default function TrackerView() {
   const ultimaConexionLabel = ultimaConexionTs != null
     ? formatStaleAge(ultimaConexionTs)
     : ''
+
+  // NOTE: dataAgeMin / isStaleSignal / isRadioSilence are computed earlier
+  // (before `screen`) so they're available for the screen-state override.
+  // See the V6.10 STALE_DATA_EXPOSURE block above.
 
   const centerLat = mapLat
   const centerLng = mapLng
@@ -4107,8 +4252,10 @@ export default function TrackerView() {
                 is purely "do we have historical data to show?". The map is never
                 'blind' when the CSV history has points, regardless of live signal.
                 ghostVisible (the user toggle for the GhostRail panel) still hides
-                the trail when explicitly turned off by the operator. */}
-            {ghostVisible && routedTrailPts.length >= 2 && (
+                the trail when explicitly turned off by the operator.
+                V6.8 GHOST_TRAIL_THRESHOLD: gate lowered from >= 2 to >= 1 so the
+                stationary CircleMarker renders for single-point histories. */}
+            {ghostVisible && routedTrailPts.length >= 1 && (
               <GhostTrail key={`ghost-${routedTrailPts.length}`} routedPoints={routedTrailPts} />
             )}
           </MapContainer>
@@ -4226,6 +4373,7 @@ export default function TrackerView() {
             points={ghostrailPts}
             scrubIndex={timeScrubIndex}
             scrubbing={scrubbing}
+            stale={isStaleSignal}
             onScrub={(idx) => {
               setTimeScrubIndex(idx)
               setScrubbing(true)
@@ -4472,6 +4620,41 @@ export default function TrackerView() {
                     <Signal size={11} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.7)' }} />
                     <span className="font-bold uppercase tracking-wider tabular-nums" style={{ color: 'rgba(255,255,255,.7)', fontSize: 'clamp(10px, 1.2vw, 12px)' }}>GPS {gpsQuality}</span>
                   </div>
+
+                  {/* V6.10 STALE_DATA_EXPOSURE — "Señal Latente" badge.
+                      Renders when data age >10 min. Amber pulse exposes that
+                      the displayed data is CACHED, not real-time. When age
+                      exceeds 15 min (radio silence), the Pantalla ON indicator
+                      is also forced OFF (see deriveScreenState override above). */}
+                  {isStaleSignal && (
+                    <div
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full flex-shrink-0 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+                      style={{
+                        background: 'rgba(255,170,30,.12)',
+                        border: '1px solid rgba(255,170,30,.35)',
+                      }}
+                      title={dataAgeMin != null ? `Última señal real hace ${Math.round(dataAgeMin)} min — datos en caché` : 'Datos en caché — sin señal reciente'}
+                      aria-label="Señal latente"
+                    >
+                      <span
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          background: 'rgba(255,170,30,.95)',
+                          boxShadow: '0 0 6px rgba(255,170,30,.7)',
+                          animation: 'v68JitterPulse 1.8s ease-in-out infinite',
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span
+                        className="font-bold uppercase tracking-wider tabular-nums"
+                        style={{ color: 'rgba(255,170,30,.95)', fontSize: 'clamp(10px, 1.2vw, 12px)', letterSpacing: '0.06em' }}
+                      >
+                        LATENTE{dataAgeMin != null ? ` ${Math.round(dataAgeMin)}m` : ''}
+                      </span>
+                    </div>
+                  )}
 
                   {/* V6.8 JITTER_AWARENESS_UI — secondary activity pulse.
                       Shows ONLY when GPS jitter is detected (coordinates
