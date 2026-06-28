@@ -3541,6 +3541,26 @@ export default function TrackerView() {
     }
   }, [pyState?.location?.lat, pyState?.location?.lng])
 
+  // RA30 INFORMATIVE_DASHBOARD: Última conexión — timestamp of the most recent
+  // historical point in ghostrailPts. When there's no live signal, this tells
+  // the operator when the target was last heard from (e.g. "hace 23 min").
+  // Falls back to lastSavedPos.t (localStorage cached position) if ghostrailPts
+  // is empty. null when neither is available.
+  // V6.10: moved BEFORE dataAgeMin/screen so it's available in the TDZ-safe
+  // order (dataAgeMin references ultimaConexionTs, screen references
+  // ultimaConexionLabel).
+  const ultimaConexionTs = useMemo(() => {
+    if (ghostrailPts.length > 0) {
+      const last = ghostrailPts[ghostrailPts.length - 1]
+      const ts = new Date(last.t).getTime()
+      if (isFinite(ts)) return ts
+    }
+    return lastSavedPos?.t ?? null
+  }, [ghostrailPts, lastSavedPos])
+  const ultimaConexionLabel = ultimaConexionTs != null
+    ? formatStaleAge(ultimaConexionTs)
+    : ''
+
   // V6.10 STALE_DATA_EXPOSURE — audit the raw Google payload timestamp.
   // The backend's `last_update` field carries the ISO timestamp of the most
   // recent point received from Google's Location Sharing RPC. We compute the
@@ -3548,8 +3568,6 @@ export default function TrackerView() {
   // "Señal Latente / Caché" when the data is >10 min old, and to force the
   // Pantalla ON indicator OFF when >15 min old (radio silence = no claim
   // of activity).
-  // NOTE: computed here (before `screen`) so isRadioSilence is available
-  // for the screen-state override below.
   const dataAgeMin = useMemo(() => {
     const rawTs = snapshot?.last_update ?? null
     if (rawTs) {
@@ -3688,25 +3706,9 @@ export default function TrackerView() {
     ? `${kmRecorridos.toFixed(1)} km`
     : `${Math.round(kmRecorridos * 1000)} m`
 
-  // RA30 INFORMATIVE_DASHBOARD: Última conexión — timestamp of the most recent
-  // historical point in ghostrailPts. When there's no live signal, this tells
-  // the operator when the target was last heard from (e.g. "hace 23 min").
-  // Falls back to lastSavedPos.t (localStorage cached position) if ghostrailPts
-  // is empty. null when neither is available.
-  const ultimaConexionTs = useMemo(() => {
-    if (ghostrailPts.length > 0) {
-      const last = ghostrailPts[ghostrailPts.length - 1]
-      const ts = new Date(last.t).getTime()
-      if (isFinite(ts)) return ts
-    }
-    return lastSavedPos?.t ?? null
-  }, [ghostrailPts, lastSavedPos])
-  const ultimaConexionLabel = ultimaConexionTs != null
-    ? formatStaleAge(ultimaConexionTs)
-    : ''
-
-  // NOTE: dataAgeMin / isStaleSignal / isRadioSilence are computed earlier
-  // (before `screen`) so they're available for the screen-state override.
+  // NOTE: ultimaConexionTs / ultimaConexionLabel / dataAgeMin / isStaleSignal /
+  // isRadioSilence are all computed earlier (before `screen`) so they're
+  // available in TDZ-safe order for the screen-state override.
   // See the V6.10 STALE_DATA_EXPOSURE block above.
 
   const centerLat = mapLat
