@@ -1955,6 +1955,42 @@ export default function TrackerView() {
   }, [ghostrailPts, scrubbedPts, scrubbedPoint, scrubbing, pyState?.location?.lat, pyState?.location?.lng, movement.speedKmh])
 
   // ══════════════════════════════════════════════════════════════════
+  // V9 PAYLOAD_HEADING_INJECTION: prefer heading/bearing/course from the
+  // raw Google Location Sharing payload over the computed (atan2) heading.
+  // The device-reported heading is authoritative when present. We scan
+  // ghostrail_pts[0], points[0], and stats.current_heading in that order,
+  // checking `heading`, `bearing`, and `course` fields (Google API variants).
+  // When a valid 0-360 deg value is found, it overrides the computed heading
+  // and the latch is released (Google's value is already device-smoothed).
+  // When no payload heading exists, we fall back to headingState (computed).
+  // Per V9 spec: if heading exists → rotate marker; if not → static point.
+  // ══════════════════════════════════════════════════════════════════
+  const payloadHeading = useMemo<number | null>(() => {
+    const latestGhost = ghostrailPts[0] as any
+    const latestPoint = snapshot?.points?.[0] as any
+    const statsHeading = (snapshot as any)?.stats?.current_heading
+    const candidates: any[] = [
+      latestGhost?.heading,
+      latestGhost?.bearing,
+      latestGhost?.course,
+      latestPoint?.heading,
+      latestPoint?.bearing,
+      latestPoint?.course,
+      statsHeading,
+    ]
+    for (const c of candidates) {
+      if (typeof c === 'number' && isFinite(c) && c >= 0 && c <= 360) {
+        return c
+      }
+    }
+    return null
+  }, [ghostrailPts, snapshot?.points, snapshot])
+
+  // V9: effective heading prefers the Google payload; falls back to computed.
+  const effectiveHeading = payloadHeading != null ? payloadHeading : headingState.heading
+  const effectiveHeadingLatch = payloadHeading != null ? false : headingState.latched
+
+  // ══════════════════════════════════════════════════════════════════
   // V5.7 NAV_03_SNAP_TO_DOOR: when stationary > 5min, apply ~8m perpendicular
   // offset toward the "nearest sidewalk" (right-hand side of arrival vector).
   // Display-only — the underlying lat/lng data stays accurate. The marker
@@ -3435,9 +3471,12 @@ export default function TrackerView() {
                     speedLabel={mapData.show_speed ? mapData.speed_label : ''}
                     accuracy={gpsAccuracy}
                     solarDate={circadianNow}
-                    heading={headingState.heading}
-                    headingLatch={headingState.latched}
+                    heading={effectiveHeading}
+                    headingLatch={effectiveHeadingLatch}
                   />
+                  {/* V9 TARGETING_RETICLE: static red crosshair centered on the
+                      map viewport (NOT a Leaflet marker). Rendered as a sibling
+                      div so it stays fixed regardless of pan/zoom. */}
                   {/* DEBUG_OVERLAY_INJECTION: red crosshair at the RAW backend
                       coordinate. Only rendered when it differs from the
                       rendered pin by > 1m, so the map isn't cluttered when
@@ -3465,8 +3504,8 @@ export default function TrackerView() {
                 speedLabel="⏮ SCRUB"
                 accuracy={gpsAccuracy}
                 solarDate={circadianNow}
-                heading={headingState.heading}
-                headingLatch={headingState.latched}
+                heading={effectiveHeading}
+                headingLatch={effectiveHeadingLatch}
               />
             )}
             {/* MAGIA2: Thermal Clusters of Detention (loitering heatmaps) */}
@@ -3481,6 +3520,37 @@ export default function TrackerView() {
               <GhostTrail key={`ghost-${routedTrailPts.length}`} routedPoints={routedTrailPts} />
             )}
           </MapContainer>
+          {/* V9 TARGETING_RETICLE: static red crosshair pinned to the CENTER of
+              the map viewport. This is a plain div overlay (pointer-events:
+              none) layered ABOVE the Leaflet panes but below the glass UI.
+              It does NOT pan with the map — it stays fixed as a visual
+              reference for the operator ("what the device is centered on"). */}
+          <div
+            className="pointer-events-none absolute z-[1500]"
+            style={{
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: '52px',
+              height: '52px',
+            }}
+            aria-hidden="true"
+          >
+            {/* Horizontal reticle line */}
+            <div style={{ position: 'absolute', top: '50%', left: 0, width: '100%', height: '1.5px', background: '#ff3b30', transform: 'translateY(-50%)', boxShadow: '0 0 4px rgba(255,59,48,.7)' }} />
+            {/* Vertical reticle line */}
+            <div style={{ position: 'absolute', left: '50%', top: 0, height: '100%', width: '1.5px', background: '#ff3b30', transform: 'translateX(-50%)', boxShadow: '0 0 4px rgba(255,59,48,.7)' }} />
+            {/* Center dot */}
+            <div style={{ position: 'absolute', top: '50%', left: '50%', width: '5px', height: '5px', borderRadius: '50%', background: '#ff3b30', transform: 'translate(-50%, -50%)', boxShadow: '0 0 6px rgba(255,59,48,.95)' }} />
+            {/* Corner brackets — NW */}
+            <div style={{ position: 'absolute', top: '-3px', left: '-3px', width: '9px', height: '9px', borderTop: '1.5px solid #ff3b30', borderLeft: '1.5px solid #ff3b30' }} />
+            {/* NE */}
+            <div style={{ position: 'absolute', top: '-3px', right: '-3px', width: '9px', height: '9px', borderTop: '1.5px solid #ff3b30', borderRight: '1.5px solid #ff3b30' }} />
+            {/* SW */}
+            <div style={{ position: 'absolute', bottom: '-3px', left: '-3px', width: '9px', height: '9px', borderBottom: '1.5px solid #ff3b30', borderLeft: '1.5px solid #ff3b30' }} />
+            {/* SE */}
+            <div style={{ position: 'absolute', bottom: '-3px', right: '-3px', width: '9px', height: '9px', borderBottom: '1.5px solid #ff3b30', borderRight: '1.5px solid #ff3b30' }} />
+          </div>
           {/* V5.5 UI_PURGE_PLACEHOLDER: 'Sin actividad reciente' text overlay
               REMOVED. When there is no trail data, the map stays clean — visual
               silence is preferable to an intrusive 'no data' label. */}
