@@ -672,11 +672,7 @@ function useRoutedTrail(rawPoints: { lat: number; lng: number; t?: string }[]): 
         allRoutedPts.push([to.lat, to.lng])
       }
 
-      if (anyRouteFailed) {
-        console.log(`[GHOSTRAIL_F5] Routed ${validPts.length - 1} segments, some fell back to straight lines`)
-      } else {
-        console.log(`[GHOSTRAIL_F5] All ${validPts.length - 1} segments routed via OSRM, ${allRoutedPts.length} total points`)
-      }
+      // V10: [GHOSTRAIL_F5] debug logs removed — production console must stay clean.
 
       isRoutingRef.current = false
       requestAnimationFrame(() => setRoutedPoints(allRoutedPts))
@@ -1833,7 +1829,14 @@ export default function TrackerView() {
   // renderers. Defense-in-depth: even if a future code path bypasses the
   // ingestion sanitizers (e.g. a stale snapshot restored from sessionStorage,
   // or a legacy cache), the map can never receive a non-array.
-  const rawGhostrailPts = sanitizePointsArray(snapshot?.ghostrail_pts, 'memo.ghostrailPts.input')
+  // V10 REACT_LIFECYCLE_FIX: memoize rawGhostrailPts so it only changes when
+  // snapshot?.ghostrail_pts reference changes. Without this, sanitizePointsArray
+  // returns a NEW array every render → ghostrailPts useMemo recomputes every
+  // render → [GHOSTRAIL_V7] log fired every 500ms (snapTick) → main thread flood.
+  const rawGhostrailPts = useMemo(
+    () => sanitizePointsArray(snapshot?.ghostrail_pts, 'memo.ghostrailPts.input'),
+    [snapshot?.ghostrail_pts],
+  )
   const ghostrailDiagnostics = useRef({ source: 'empty', live: 0, cache: 0, discarded_age: 0, discarded_no_ts: 0, discarded_dup: 0, total: 0 })
   const ghostrailPts = useMemo(() => {
     const now = Date.now()
@@ -1905,7 +1908,8 @@ export default function TrackerView() {
     diag.total = deduped.length
     ghostrailDiagnostics.current = diag
 
-    console.log(`[GHOSTRAIL_V7] source=${diag.source} live=${diag.live} cache=${diag.cache} total=${diag.total} discarded_age=${diag.discarded_age} discarded_no_ts=${diag.discarded_no_ts} discarded_dup=${diag.discarded_dup}`)
+    // V10: [GHOSTRAIL_V7] console.log removed — was firing every render due to
+    // unmemoized rawGhostrailPts. Diagnostics still available in ghostrailDiagnostics.current.
 
     return deduped
   }, [rawGhostrailPts, cachedGhostPts])
@@ -2110,28 +2114,8 @@ export default function TrackerView() {
       driftM: report.driftM,
       exceedsThreshold: report.exceedsThreshold,
     }
-    // Console diagnostics: log every report at debug, warn if > threshold.
-    if (report.exceedsThreshold) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[V6.0_DRIFT] drift=${report.driftM.toFixed(1)}m exceeds 50m threshold`,
-        {
-          raw: report.raw,
-          rendered: report.rendered,
-          viewport: report.viewportCenter,
-          pinToViewport: `${report.pinToViewportM.toFixed(1)}m`,
-          accuracy: `${report.accuracyM}m`,
-          snapReason: roadSnapped.reason,
-          ts: report.ts,
-        },
-      )
-    } else if (report.driftM > 1) {
-      // eslint-disable-next-line no-console
-      console.debug(
-        `[V6.0_DRIFT] drift=${report.driftM.toFixed(1)}m (ok)`,
-        { raw: report.raw, rendered: report.rendered, snapReason: roadSnapped.reason },
-      )
-    }
+    // V10: [V6.0_DRIFT] console.warn/debug removed — was firing every 2s (driftTick).
+    // Drift report still stored in driftDebugRef.current for DriftDebugMarker overlay.
   }, [normalizedPin, calibratedDisplayPos, roadSnapped, pyState?.gps?.accuracy, pyState?.location?.accuracy, driftTick])
 
   // FORCED_MAP_SYNC: fire fitBounds or panTo based on the drift report.
@@ -2162,12 +2146,8 @@ export default function TrackerView() {
         const curZoom = map.getZoom()
         map.panTo([action.lat, action.lng], { animate: true, duration: 0.6 })
         map.setZoom(curZoom, { animate: true })
-        // eslint-disable-next-line no-console
-        console.debug(`[V6.0_MAP_SYNC] fitBounds fired (acc=${action.accuracyM}m) — pin re-centered`)
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn('[V6.0_MAP_SYNC] fitBounds failed', e)
-      }
+        // V10: [V6.0_MAP_SYNC] debug log removed.
+      } catch { /* V10: fitBounds failure silently ignored — console purged */ }
     } else if (action.kind === 'panTo') {
       // Direct panTo (not panToWithOffset) — for forced re-sync, exact
       // centering is correct. panToWithOffset is declared later in the
@@ -2175,8 +2155,7 @@ export default function TrackerView() {
       try {
         map.panTo([action.lat, action.lng], { animate: true, duration: 0.6 })
       } catch { /* ignore */ }
-      // eslint-disable-next-line no-console
-      console.debug(`[V6.0_MAP_SYNC] panTo fired (pin >50m from viewport center)`)
+      // V10: [V6.0_MAP_SYNC] debug log removed.
     }
   }, [normalizedPin, calibratedDisplayPos, pyState?.gps?.accuracy, pyState?.location?.accuracy, driftTick])
 
@@ -2520,7 +2499,7 @@ export default function TrackerView() {
       // No gateway in production — log once and rely on HTTP polling.
       // The Smart Polling system (SYS3) handles data delivery: it polls
       // /points every 3s when data is stale, and kills polling when fresh.
-      console.log('[V5.8_SOCKET] Production environment detected — using HTTP polling (no gateway deployed). Hostname:', hostname)
+      // V10: [V5.8_SOCKET] production log removed — console must stay clean.
       setSocketConnected(false)
       return // Skip socket creation entirely
     }
@@ -2552,7 +2531,7 @@ export default function TrackerView() {
 
         socket.on('connect', () => {
           setSocketConnected(true)
-          console.log('[V5.8_SOCKET] Connected to Realtime Gateway')
+          // V10: [V5.8_SOCKET] connected log removed.
         })
 
         socket.on('location_update', (data: any) => {
@@ -2590,18 +2569,15 @@ export default function TrackerView() {
 
         socket.on('disconnect', (reason) => {
           setSocketConnected(false)
-          console.log('[V5.8_SOCKET] Disconnected:', reason)
+          // V10: [V5.8_SOCKET] disconnected log removed.
           // The HTTP polling fallback will re-arm automatically because
           // wsConnected flips to false when lastDataTsRef becomes stale.
         })
 
         socket.on('connect_error', (err) => {
           setSocketConnected(false)
-          // Silent — in production without a gateway, this is expected.
+          // V10: [V5.8_SOCKET] connect_error warn removed — falling back to HTTP polling is expected behavior.
           // The HTTP polling fallback handles data delivery.
-          if (process.env.NODE_ENV === 'development') {
-            console.warn('[V5.8_SOCKET] Connection error (falling back to HTTP polling):', err.message)
-          }
         })
       } catch (err) {
         console.error('[V5.8_SOCKET] Failed to create socket:', err)
@@ -2730,7 +2706,7 @@ export default function TrackerView() {
           })
           return
         }
-      } catch { /* /points not available */ }
+      } catch (e) { console.error('[V10] /points fetch failed:', e) }
 
       setWsConnected(false)
     }
