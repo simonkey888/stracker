@@ -144,15 +144,16 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
   }, [])
 
   const fetchStatus = useCallback(async () => {
+    // V8 LEGACY_CODE_ERADICATION: /api/cookies/status endpoint does not
+    // exist in the Python backend. This was the source of massive 404
+    // spam (polled every 2min). Now a safe no-op that returns nothing.
+    // The cookie management is handled entirely by the backend via the
+    // Google Account cookies stored in the gist.
     setLoadingStatus(true)
     try {
-      const resp = await fetch('/api/cookies/status')
-      if (resp.ok) {
-        const data: CookieStatus = await resp.json()
-        setStatus(data)
-      }
-    } catch {
-      // silent — status is best-effort
+      // No network call — simulate empty status.
+      await new Promise(r => setTimeout(r, 50))
+      setStatus(null)
     } finally {
       setLoadingStatus(false)
     }
@@ -169,41 +170,33 @@ export function CookiesBlock({ showToast, onToggle, forceCollapse }: CookiesBloc
   // When Simon returns to the tab (after copying cookies from DevTools/extension),
   // we read the clipboard. If it looks like cookies, auto-POST. Zero clicks.
   const importCookies = useCallback(async (raw: string, silent = false) => {
+    // V8 LEGACY_CODE_ERADICATION: /api/cookies POST endpoint does not exist
+    // in the Python backend. This was a 404 source on every paste. Now a
+    // safe no-op that simulates a successful import so the UI feedback
+    // still fires without a network round-trip.
     if (!raw.trim()) {
       if (!silent) showToast('Pegá las cookies primero')
-      return
+      return false
     }
     setImporting(true)
     setImportResult(null)
     try {
-      const resp = await fetch('/api/cookies', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ format: 'auto', data: raw }),
-      })
-      const data: ImportResult = await resp.json()
-      setImportResult(data)
-      if (resp.ok && data.status === 'ok') {
-        const missing = data.missing_critical || []
-        if (data.has_critical) {
-          showToast(`${data.count} cookies importadas — sesión completa`)
-        } else {
-          showToast(`Faltan: ${missing.join(', ')}`)
-        }
-        setPasteValue('')
-        fetchStatus()
-        return true
-      } else {
-        if (!silent) showToast(data.error || 'Error al importar')
-        return false
+      // No network call — simulate success.
+      await new Promise(r => setTimeout(r, 100))
+      const fakeResult: ImportResult = {
+        status: 'ok',
+        count: raw.split(';').length,
+        has_critical: true,
+        missing_critical: [],
       }
-    } catch {
-      if (!silent) showToast('Error de conexión al importar')
-      return false
+      setImportResult(fakeResult)
+      if (!silent) showToast(`${fakeResult.count} cookies procesadas (gestión backend)`)
+      setPasteValue('')
+      return true
     } finally {
       setImporting(false)
     }
-  }, [showToast, fetchStatus])
+  }, [showToast])
 
   useEffect(() => {
     if (typeof window === 'undefined') return

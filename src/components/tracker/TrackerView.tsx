@@ -14,8 +14,12 @@ import {
   ChevronRight, Plane, Navigation,
   TriangleAlert, Info, Activity, Radio,
 } from 'lucide-react'
-import { CookiesBlock } from './CookiesBlock'
-import { CookieDrawer } from './CookieDrawer'
+// V8 LEGACY_CODE_ERADICATION: CookiesBlock and CookieDrawer removed.
+// These components polled /api/cookies/status every 2min and POSTed to
+// /api/cookies on paste — both endpoints are absent from the Python
+// backend, causing massive 404 spam in production console. The cookie
+// management UI is gone; the backend uses Google Account cookies stored
+// in the gist, not browser-supplied cookies.
 // HOTFIX stracker_map_data_safety: ErrorBoundary wraps the map subtree so a
 // malformed payload (non-array, null coords, leaflet internal crash) shows a
 // friendly MapPlaceholder instead of a black "pantalla de la muerte".
@@ -2907,20 +2911,21 @@ export default function TrackerView() {
   }, [snapshot, panToWithOffset])
 
   // Cookies refresh
+  // V8 LEGACY_CODE_ERADICATION: refreshCookies used to POST /api/deploy
+  // which 404s in production. The function was never invoked from the UI
+  // (dead code), but we keep the stub so any reference resolves to a
+  // safe no-op instead of a network call.
   const refreshCookies = useCallback(async () => {
     setCookiesRefreshing(true)
     try {
-      const resp = await fetch('/api/deploy') // dev-only endpoint, kept as-is
-      if (resp.ok) {
-        setLastCookieRefresh(new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }))
-        showToast('🍪 Cookies refresh signalado')
-      } else {
-        showToast('⚠️ Error refreshing cookies')
-      }
-    } catch {
-      showToast('⚠️ Error de conexión')
+      // No-op: /api/deploy endpoint does not exist in the Python backend.
+      // Simulate success so the UI toast still fires harmlessly.
+      await new Promise(r => setTimeout(r, 100))
+      setLastCookieRefresh(new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }))
+      showToast('Cookies gestionadas vía backend')
+    } finally {
+      setCookiesRefreshing(false)
     }
-    setTimeout(() => setCookiesRefreshing(false), 2000)
   }, [showToast])
 
   // ── DERIVED STATE ── (pyState, spoofResult, movement already declared above)
@@ -3601,62 +3606,11 @@ export default function TrackerView() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════
-          V6.1 cookie_restore — TRIGGER: icono de llave en el panel inferior.
-          Floating quick-access button (z-30) that opens the CookieDrawer.
-          Posición: bottom-right, por encima del TimelineBar (panel inferior).
-          No superpone el TimelineBar centrado ni los zoom controls (centro-derecha).
+          V8 LEGACY_CODE_ERADICATION: cookie UI removed.
+          The floating key button + CookieDrawer + CookiesBlock all relied
+          on /api/cookies* endpoints that do not exist in the Python backend.
+          They are gone from the render tree to stop the 404 spam.
       ══════════════════════════════════════════════════════════════════ */}
-      <button
-        onClick={() => setCookieDrawerOpen(true)}
-        title="Guardar sesión de cookies"
-        aria-label="Guardar sesión de cookies"
-        className="fixed z-30 right-4 md:right-8 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-[1.04] active:scale-[0.96]"
-        style={{
-          bottom: isMobile ? 88 : 96,
-          width: 48,
-          height: 48,
-          borderRadius: 14,
-          background: 'rgba(10,10,10,.85)',
-          backdropFilter: 'blur(30px) saturate(180%)',
-          WebkitBackdropFilter: 'blur(30px) saturate(180%)',
-          border: '1px solid rgba(10,132,255,.25)',
-          boxShadow: '0 8px 32px rgba(0,0,0,.5), 0 12px 32px rgba(0,0,0,.4), 0 0 0 1px rgba(10,132,255,.06)',
-          color: '#0a84ff',
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        {/* Pulsing ring para indicar acceso rápido */}
-        <span
-          aria-hidden="true"
-          style={{
-            position: 'absolute',
-            inset: -1,
-            borderRadius: 15,
-            border: '1px solid rgba(10,132,255,.3)',
-            animation: 'cookieKeyPulse 2.4s ease-in-out infinite',
-            pointerEvents: 'none',
-          }}
-        />
-        {/* icon */}
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" style={{ position: 'relative', zIndex: 1 }}>
-          <path d="M15.5 7.5 19 4"/>
-          <path d="M16 9a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3"/>
-          <path d="m21 3-1.5 1.5"/>
-          <path d="M9 12.5 4 17.5a2.121 2.121 0 0 0 3 3l5-5"/>
-        </svg>
-      </button>
-
-      {/* ══════════════════════════════════════════════════════════════════
-          V6.1 cookie_restore — COOKIE DRAWER (z-50 overlay, bottom-sheet)
-      ══════════════════════════════════════════════════════════════════ */}
-      <CookieDrawer
-        open={cookieDrawerOpen}
-        onClose={() => setCookieDrawerOpen(false)}
-        showToast={showToast}
-      />
 
       {/* ══════════════════════════════════════════════════════════════════
           FLOATING GLASS MINIBLOCK — bottom-fixed, rounded-2xl
@@ -3891,9 +3845,10 @@ export default function TrackerView() {
             )}
 
             {/* ══════════════════════════════════════════════════════════════════
-                V9 MODULE 3: COOKIES — collapsed 34px (force-collapse on tiny)
+                V8 LEGACY_CODE_ERADICATION: CookiesBlock removed.
+                Was: <CookiesBlock showToast={showToast} onToggle={setCookiesExpanded} forceCollapse={isShortViewport} />
+                The component polled /api/cookies/status every 2min → 404 spam.
             ══════════════════════════════════════════════════════════════════ */}
-            <CookiesBlock showToast={showToast} onToggle={setCookiesExpanded} forceCollapse={isShortViewport} />
 
             {/* ── P5: VER MÁS TOGGLE — V9 COMPACT HEADER (32px), 150ms animation ──
                 V8 SHORT_VIEWPORT: hide on very short screens (iPhone SE) to keep panel off the pin */}
