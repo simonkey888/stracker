@@ -2240,6 +2240,11 @@ export default function TrackerView() {
   // V9: external snap control — when 📋 opens VER MÁS, expand sheet to 'half' on mobile
   const [externalSheetSnap, setExternalSheetSnap] = useState<'closed' | 'half' | 'full' | null>(null)
 
+  // ── V11 UI_REDESIGN_MOBILE_FIRST: Bottom Sheet expand state ──
+  // collapsed = ~22vh (≤25-30% per spec, never covers central crosshair/pin)
+  // expanded = ~55vh (full telemetry + forensic + diagnostics)
+  const [sheetExpanded, setSheetExpanded] = useState<boolean>(false)
+
   // V9: when VER MÁS toggles, control sheet snap on mobile (desktop is always open panel)
   // FIX_2 (stracker_hotfix_ui_v8.2): cuando VER MÁS está cerrado (default),
   // el sheet va a 'half' (NO 'closed'). Antes se forzaba a 'closed' (38px =
@@ -2632,7 +2637,20 @@ export default function TrackerView() {
     prevAlertRef.current = next
   }, [snapshot, pyState, movement])
 
+  // ── V11 TELEMETRY_LIFECYCLE_PURGE: /points polling useEffect ──
+  // AUDIT: Every setInterval/setTimeout is cleared in a single cleanup return.
+  // No anonymous timers escape. Deps = [isLiveMode, wsConnected] (minimal).
+  // When isLiveMode === false, the effect returns immediately — zero timers,
+  // zero fetches, zero memory pressure. V6.11 logic inside poll() preserved.
   useEffect(() => {
+    // V11: Live mode gate. When paused, ALL polling stops. The last snapshot
+    // is preserved. (V6.11 re-enables isLiveMode on fresh payload, so this
+    // gate only blocks polling during a deliberate user pause.)
+    if (!isLiveMode) return
+
+    let intervalId: ReturnType<typeof setInterval> | null = null
+    let staleTimerId: ReturnType<typeof setTimeout> | null = null
+
     const poll = async () => {
       try {
         // LOGIC_GHOSTTRAIL_02: explicit 24h time window (1440 min) injected as
@@ -2716,18 +2734,23 @@ export default function TrackerView() {
     if (wsConnected) {
       const remaining = STALE_MS - (Date.now() - lastDataTsRef.current)
       const delay = remaining > 1000 ? remaining : 1000
-      const staleTimer = setTimeout(() => {
+      staleTimerId = setTimeout(() => {
         // No fresh data for STALE_MS → declare stale, re-arm polling
         setWsConnected(false)
       }, delay)
-      return () => clearTimeout(staleTimer)
+    } else {
+      // Disconnected (stale) → poll aggressively every 3s until fresh data arrives
+      poll()
+      intervalId = setInterval(poll, 3000)
     }
 
-    // Disconnected (stale) → poll aggressively every 3s until fresh data arrives
-    poll()
-    const interval = setInterval(poll, 3000)
-    return () => clearInterval(interval)
-  }, [wsConnected])
+    // V11 SURGICAL CLEANUP: both timers are cleared on unmount OR dep change.
+    // Single exit point — no timer can leak across renders.
+    return () => {
+      if (intervalId) clearInterval(intervalId)
+      if (staleTimerId) clearTimeout(staleTimerId)
+    }
+  }, [isLiveMode, wsConnected])
 
   // ── T3: panToWithOffset ── Centers the pin with a horizontal pixel offset
   // so the pin sits in the VISIBLE center (right of the left desktop panel),
@@ -3713,581 +3736,273 @@ export default function TrackerView() {
         />
       </div>
 
-      <TrackerSheet
-        isMobile={isMobile}
-        isShortViewport={isShortViewport}
-        onHeightChange={setSheetSnap}
-        onProgressChange={setSheetProgress}
-        externalSnap={externalSheetSnap}
+      {/* ════════════════════════════════════════════════════════════════════
+          V11 BOTTOM SHEET — Apple Maps style, inline (replaces TrackerSheet).
+          Collapsed: ~22vh (≤25-30% per spec → V9 crosshair + pin never covered)
+          Expanded: ~55vh (telemetry + forensic + ver más accordion)
+          Strict Dark Mode: bg-black/70, backdrop-blur-lg, border-gray-800.
+          Drag Handle: bg-zinc-600 bar, 44px tap target, tap to toggle.
+          All buttons ≥44×44px (min-h-11 / w-11 h-11 / p-3).
+          V9 targeting crosshair (z-[1500]) is rendered separately above this
+          sheet and is NEVER covered (collapsed = 22vh).
+          ════════════════════════════════════════════════════════════════════ */}
+      <div
+        className="fixed left-0 right-0 bottom-0 z-20 flex flex-col pointer-events-auto"
+        style={{
+          height: sheetExpanded ? '55vh' : '22vh',
+          background: 'rgba(0,0,0,0.7)',
+          backdropFilter: 'blur(16px)',
+          WebkitBackdropFilter: 'blur(16px)',
+          borderTop: '1px solid #1f2937',
+          borderRadius: '20px 20px 0 0',
+          boxShadow: '0 -8px 32px rgba(0,0,0,.5)',
+          transition: 'height 350ms cubic-bezier(0.2,0.8,0.2,1)',
+          paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+        }}
       >
+        {/* DRAG HANDLE — bg-zinc-600 bar, 44px tap target, tap to toggle */}
+        <button
+          aria-label={sheetExpanded ? 'Colapsar panel' : 'Expandir panel'}
+          className="flex justify-center items-center w-full pt-3 pb-2 cursor-pointer flex-shrink-0 transition-all active:scale-95"
+          style={{ minHeight: 44, touchAction: 'none' }}
+          onClick={() => setSheetExpanded(!sheetExpanded)}
+        >
+          <div style={{ width: 40, height: 5, borderRadius: 3, background: '#52525b' }} />
+        </button>
 
-            {/* ══════════════════════════════════════════════════════════════════
-                V9 MODULE 1: ESTADO — single compact metrics line (30px)
-                Location+zone live in top StateChip (no duplication).
-                Row: [spoof] [movement] [battery] [network] [screen] [gps] [v] [●ws]
-                Spec examples: 🚶3km · 🔋18% · 📶WiFi · 📱ON · 📡ALTA
-            ══════════════════════════════════════════════════════════════════ */}
-            {/* CA_UI_1: Apple Maps Minimalist metrics row — rounded-3xl glass.
-                V6.0: expansive padding + gap-3 md:gap-4 for breathing room. */}
-            <div
-              className="flex items-center gap-3 md:gap-4 p-3 md:p-4 overflow-x-auto no-scrollbar metrics-scroll bg-[#0a0a0a]/85 backdrop-blur-xl rounded-3xl border border-white/[0.05] shadow-2xl whitespace-nowrap min-h-[44px]"
+        {/* SCROLLABLE CONTENT */}
+        <div className="flex-1 overflow-y-auto px-4 pb-4" style={{ scrollbarWidth: 'none' }}>
+
+          {/* ── ROW 1: LIVE TOGGLE (V11 isLiveMode) + SPEED + HEADING ── */}
+          <div className="flex items-center gap-3 mb-3">
+            {/* V11 Live/Pause toggle — 44px touch target, #ff3b30 when live */}
+            <button
+              aria-label={isLiveMode ? 'Pausar modo live' : 'Activar modo live'}
+              className="flex items-center justify-center w-11 h-11 rounded-full cursor-pointer flex-shrink-0 transition-all active:scale-95"
+              style={{
+                background: isLiveMode ? 'rgba(255,59,48,0.18)' : 'rgba(255,255,255,0.06)',
+                border: `1px solid ${isLiveMode ? 'rgba(255,59,48,0.5)' : '#1f2937'}`,
+                color: isLiveMode ? '#ff3b30' : 'rgba(255,255,255,0.5)',
+              }}
+              onClick={() => setIsLiveMode(!isLiveMode)}
             >
-              {/* M8: Skeleton shimmer pills while loading (no data yet) */}
-              {!snapshot ? (
-                <>
-                  <div className="skeleton-shimmer h-4 w-10 flex-shrink-0" />
-                  <div className="skeleton-shimmer h-4 w-12 flex-shrink-0" />
-                  <div className="skeleton-shimmer h-4 w-10 flex-shrink-0" />
-                  <div className="skeleton-shimmer h-4 w-14 flex-shrink-0" />
-                  <div className="skeleton-shimmer h-4 w-10 flex-shrink-0" />
-                </>
-              ) : (
-              <>
-              {/* SpoofBadge — visual only (🟢🟡🟠🔴) */}
-              <SpoofBadgeV2 result={spoofResult} />
+              <Radio size={16} strokeWidth={2} />
+            </button>
 
-              {/* FIX_3: Movement — lucide vector icon (walk/car/bus/sleep/still) */}
-              <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
-                {(() => { const MIcon = resolveMovementIcon(movement.compactIcon); return <MIcon size={12} strokeWidth={1.5} style={{ color: movement.isActive ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.5)' }} /> })()}
-                <span className="font-bold uppercase tracking-wider whitespace-nowrap tabular-nums" style={{ color: movement.isActive ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.5)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{movement.compactValue}</span>
-              </div>
-
-              {/* FIX_3: Battery — lucide Battery icon */}
-              {batteryLabel && (
-                <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
-                  <Battery size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.8)' }} />
-                  <span className="font-bold uppercase tracking-wider whitespace-nowrap tabular-nums" style={{ color: 'rgba(255,255,255,.8)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{batteryLabel}</span>
-                </div>
-              )}
-
-              {/* FIX_3: Network — lucide Wifi/Smartphone/WifiOff icon */}
-              <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
-                {(() => { const NIcon = resolveNetworkIcon(networkTypeToToken(network.type)); return <NIcon size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.8)' }} /> })()}
-                <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color: 'rgba(255,255,255,.8)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{network.type}</span>
-              </div>
-
-              {/* FIX_3: Screen — lucide Smartphone icon */}
-              <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
-                <Smartphone size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.8)' }} />
-                <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color: 'rgba(255,255,255,.8)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{screen.shortLabel}</span>
-              </div>
-
-              {/* FIX_3: GPS — lucide Signal icon */}
-              <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
-                <Signal size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,.8)' }} />
-                <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color: 'rgba(255,255,255,.8)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{gpsQuality}</span>
-              </div>
-
-              {/* V6.11 Phase 1: DEVICE LABEL — Golden Fingerprint resolved.
-                  Shows "Samsung A16" when the locked fingerprint matches the
-                  live payload; falls back to raw token or "DESCONOCIDO". */}
-              <div className={`flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0 ${GLASS_PILL}`}>
-                <span className="font-bold uppercase tracking-wider whitespace-nowrap" style={{ color: 'rgba(255,255,255,.95)', fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{deviceLabelV611}</span>
-              </div>
-
-              {/* Right-side: version + ws dot (compact, end of row) */}
-              <span className="font-mono text-white/15 flex-shrink-0 ml-auto tabular-nums" style={{ fontSize: 'clamp(6px, 1.2vw, 8px)' }}>v{snapshotVersion}</span>
-              <span className="font-mono flex-shrink-0" style={{ color: wsConnected ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.3)', fontSize: 11 }}>
-                {wsConnected ? '●' : '○'}
+            {/* Speed — primary readout */}
+            <div className="flex flex-col flex-1 min-w-0">
+              <span className="font-light uppercase tracking-wider text-gray-500" style={{ fontSize: 9, letterSpacing: '0.08em' }}>Velocidad</span>
+              <span className="font-semibold tabular-nums text-white" style={{ fontSize: 20, letterSpacing: '-0.02em' }}>
+                {movement.speedKmh == null ? '--' : movement.speedKmh.toFixed(1)}
+                <span className="text-gray-500 font-light ml-1" style={{ fontSize: 11 }}>km/h</span>
               </span>
-              </>
-              )}
             </div>
 
-            {/* ══════════════════════════════════════════════════════════════════
-                MC_8_04 (stracker_v8_hyper_premium): SPEED GAUGE — Apple Watch
-                glass ring. On desktop the panel is always open (render always).
-                On mobile, only render at HALF or FULL snap (T3-step4) so the
-                closed 38px handle stays minimal. Gives an at-a-glance kinetic
-                read: ring fill = speed, color band = intensity (cyan→green→
-                orange→red).
-            ══════════════════════════════════════════════════════════════════ */}
-            {(!isMobile || sheetSnap === 'half' || sheetSnap === 'full') && (
-              <div
-                className="flex items-center gap-4 md:gap-6 p-4 md:p-6 rounded-3xl shadow-2xl transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
-                style={{
-                  background: 'rgba(10,10,10,.85)',
-                  backdropFilter: 'blur(30px) saturate(180%)',
-                  WebkitBackdropFilter: 'blur(30px) saturate(180%)',
-                  border: '1px solid rgba(255,255,255,.05)',
-                  boxShadow: '0 8px 32px rgba(0,0,0,.5), 0 24px 64px rgba(0,0,0,.45)',
-                  animation: 'cookiesExpand 250ms ease-out',
-                }}
-              >
-                <SpeedGauge speedKmh={movement.speedKmh} size={isMobile ? 96 : 108} />
-                {/* V5.6 UI_MICRO_CONTRAST_02: inner card bg-white/5 lifts the
-                    telemetry readouts off the panel base, creating depth.
-                    V6.0: gap-2.5 md:gap-3 + p-3 md:p-3.5 for breathing room.
-                    V5.6 UI_HIERARCHY_01: labels font-light/white-50, values
-                    font-semibold/white — radical label/value differentiation. */}
-                <div
-                  className="flex flex-col gap-2.5 md:gap-3 flex-1 min-w-0 rounded-2xl p-3 md:p-3.5 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]"
-                  style={{
-                    background: 'rgba(255,255,255,.04)',
-                    border: '1px solid rgba(255,255,255,.03)',
-                  }}
-                >
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="font-light uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.5)', fontSize: 10, letterSpacing: '0.06em' }}>VELOCIDAD</span>
-                    <span
-                      className="font-semibold tabular-nums"
-                      style={{ color: movement.isActive ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.5)', fontSize: 14, letterSpacing: '-0.01em' }}
-                    >
-                      {movement.speedKmh == null ? '--' : `${movement.speedKmh.toFixed(1)} km/h`}
-                    </span>
-                  </div>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="font-light uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.5)', fontSize: 10, letterSpacing: '0.06em' }}>MODO</span>
-                    <span
-                      className="font-semibold uppercase tracking-wider"
-                      style={{ color: movement.isActive ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.5)', fontSize: 12 }}
-                    >
-                      {movement.displayMode}
-                    </span>
-                  </div>
-                  {/* LOGIC_01 (stracker_v5.2_rev): RUMBO solo se renderiza si
-                      el objetivo está en movimiento. En modo QUIETA/STILL/SLEEP
-                      el rumbo es meaningless (dead code renderizado). */}
-                  {movement.isActive && (
-                    <div className="flex items-baseline gap-1.5">
-                      <span className="font-light uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.5)', fontSize: 10, letterSpacing: '0.06em' }}>RUMBO</span>
-                      <span className="font-semibold tabular-nums" style={{ color: 'rgba(255,255,255,.85)', fontSize: 12 }}>
-                        {pyState?.gps?.heading != null ? `${Math.round(pyState.gps.heading)}°` : '--'}
-                      </span>
-                    </div>
-                  )}
-                  {/* MC_8_02: circadian phase readout */}
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="font-light uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.5)', fontSize: 10, letterSpacing: '0.06em' }}>LUZ</span>
-                    <span className="font-semibold uppercase tracking-wider" style={{ color: 'rgba(255,255,255,.85)', fontSize: 11 }}>
-                      {(() => {
-                        const phase = computePhase(circadianNow)
-                        const labels: Record<string, string> = { night_deep: 'NOCHE', dawn: 'AMANECER', day: 'DÍA', golden: 'DORADA', dusk: 'ATARDECER', night: 'NOCHE' }
-                        return labels[phase] || 'DÍA'
-                      })()}
-                    </span>
-                  </div>
+            {/* Heading — V9 effectiveHeading (payload-injected) */}
+            <div className="flex flex-col items-end">
+              <span className="font-light uppercase tracking-wider text-gray-500" style={{ fontSize: 9, letterSpacing: '0.08em' }}>Rumbo</span>
+              <span className="font-semibold tabular-nums text-white" style={{ fontSize: 15 }}>
+                {effectiveHeading != null ? `${Math.round(effectiveHeading)}°` : '--'}
+              </span>
+            </div>
+          </div>
+
+          {/* ── ROW 2: COMPACT METRIC PILLS — spoof, battery, network, gps, screen ── */}
+          {snapshot ? (
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar mb-3" style={{ scrollbarWidth: 'none' }}>
+              <SpoofBadgeV2 result={spoofResult} />
+              {batteryLabel && (
+                <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-full flex-shrink-0" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid #1f2937' }}>
+                  <Battery size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,0.7)' }} />
+                  <span className="font-semibold tabular-nums text-gray-200" style={{ fontSize: 10 }}>{batteryLabel}%</span>
+                </div>
+              )}
+              <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-full flex-shrink-0" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid #1f2937' }}>
+                {(() => { const NIcon = resolveNetworkIcon(networkTypeToToken(network.type)); return <NIcon size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,0.7)' }} /> })()}
+                <span className="font-semibold uppercase text-gray-200" style={{ fontSize: 10 }}>{network.type}</span>
+              </div>
+              <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-full flex-shrink-0" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid #1f2937' }}>
+                <Signal size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,0.7)' }} />
+                <span className="font-semibold uppercase text-gray-200" style={{ fontSize: 10 }}>{gpsQuality}</span>
+              </div>
+              <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-full flex-shrink-0" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid #1f2937' }}>
+                <Smartphone size={12} strokeWidth={1.5} style={{ color: 'rgba(255,255,255,0.7)' }} />
+                <span className="font-semibold uppercase text-gray-200" style={{ fontSize: 10 }}>{screen.shortLabel}</span>
+              </div>
+              <span className="font-mono text-gray-600 ml-auto flex-shrink-0" style={{ fontSize: 9 }}>v{snapshotVersion}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 mb-3">
+              <div className="skeleton-shimmer h-5 w-16 rounded-full" />
+              <div className="skeleton-shimmer h-5 w-12 rounded-full" />
+              <div className="skeleton-shimmer h-5 w-14 rounded-full" />
+            </div>
+          )}
+
+          {/* ── ROW 3: PLACE + COORDS + LIVE INDICATOR (always visible) ── */}
+          <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-gray-800">
+            <div className="flex items-center gap-2 min-w-0">
+              {(() => { const MIcon = resolveMovementIcon(movement.compactIcon); return <MIcon size={14} strokeWidth={1.5} style={{ color: movement.isActive ? '#ff3b30' : 'rgba(255,255,255,0.5)' }} /> })()}
+              <div className="min-w-0">
+                <div className="font-semibold text-white truncate" style={{ fontSize: 12 }}>{locationLabel || 'Sin ubicación'}</div>
+                <div className="font-mono text-gray-500 tabular-nums" style={{ fontSize: 10 }}>
+                  {verMasGps?.lat_str || '--'} · {verMasGps?.lng_str || '--'}
                 </div>
               </div>
-            )}
+            </div>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: wsConnected ? '#ff3b30' : 'rgba(255,255,255,0.25)', boxShadow: wsConnected ? '0 0 6px #ff3b30' : 'none' }} />
+              <span className="font-semibold uppercase text-gray-400" style={{ fontSize: 9 }}>{wsConnected ? 'LIVE' : 'OFFLINE'}</span>
+            </div>
+          </div>
 
-            {/* ══════════════════════════════════════════════════════════════════
-                UI_METRICS_02 (stracker_v5.3_integration): AnalyticsPanel.
-                Three deep metrics — avg_speed (15-min MA), ETA a casa, geofence
-                status — drawn from the same ghostrail data store. Recomputes on
-                every poll via useMemo (dynamic, no reload). Glassmorphism
-                consistent with the TrackerSheet; occupies the space between the
-                SpeedGauge and the Cookies block in a balanced 3-col grid.
-            ══════════════════════════════════════════════════════════════════ */}
-            {(!isMobile || sheetSnap === 'half' || sheetSnap === 'full') && (
-              <AnalyticsPanel
-                ghostrailPts={ghostrailPts}
-                currentLat={pyState?.location?.lat ?? null}
-                currentLng={pyState?.location?.lng ?? null}
-                currentSpeedKmh={movement.speedKmh}
-                home={HOME_GEOFENCE}
-                work={WORK_GEOFENCE}
-              />
-            )}
+          {/* ════════════════════════════════════════════════════════════════
+              EXPANDED CONTENT — only when sheetExpanded === true.
+              Forensic export, cookies, ver más accordion.
+              ════════════════════════════════════════════════════════════════ */}
+          {sheetExpanded && (
+            <div style={{ animation: 'cookiesExpand 250ms ease-out' }}>
 
-            {/* ══════════════════════════════════════════════════════════════════
-                V8 LEGACY_CODE_ERADICATION: CookiesBlock removed.
-                Was: <CookiesBlock showToast={showToast} onToggle={setCookiesExpanded} forceCollapse={isShortViewport} />
-                The component polled /api/cookies/status every 2min → 404 spam.
-            ══════════════════════════════════════════════════════════════════ */}
+              {/* FORENSIC EXPORT */}
+              <div className="mb-3 pb-3 border-b border-gray-800">
+                <div className="flex items-center gap-2 mb-2">
+                  <Microscope size={12} className="text-gray-400" />
+                  <span className="font-bold uppercase tracking-wider text-gray-400" style={{ fontSize: 9 }}>Forensic Export</span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-3 rounded-xl cursor-pointer transition-all active:scale-95 min-h-11"
+                    style={{
+                      background: forensicCopied ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
+                      border: `1px solid ${forensicCopied ? 'rgba(255,255,255,0.2)' : '#1f2937'}`,
+                      color: 'rgba(255,255,255,0.85)',
+                      fontSize: 11,
+                      fontWeight: 600,
+                    }}
+                    onClick={copyForensicTelemetry}
+                  >
+                    {forensicCopied ? <Check size={13} /> : <Clipboard size={13} />}
+                    <span className="uppercase">{forensicCopied ? 'Copiado' : 'Copiar Telemetría'}</span>
+                  </button>
+                  <button
+                    aria-label="Descargar JSON"
+                    className="flex items-center justify-center w-11 h-11 rounded-xl cursor-pointer transition-all active:scale-95"
+                    style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid #1f2937', color: 'rgba(255,255,255,0.6)' }}
+                    onClick={downloadForensicTelemetry}
+                  >
+                    <Download size={14} />
+                  </button>
+                </div>
+                <div className="mt-1.5 text-gray-600" style={{ fontSize: 9 }}>
+                  {ghostrailPts.length} pts · {loiteringClusters.length} hotspots · spoof {spoofResult.score}%
+                </div>
+              </div>
 
-            {/* ── P5: VER MÁS TOGGLE — V9 COMPACT HEADER (32px), 150ms animation ──
-                V8 SHORT_VIEWPORT: hide on very short screens (iPhone SE) to keep panel off the pin */}
-            {!isShortViewport && (
-            <button
-              className="w-full flex items-center justify-center gap-2 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-[1.01] active:scale-[0.98] cursor-pointer"
-              style={{
-                minHeight: 44,
-                padding: '8px 16px',
-                background: showVerMas
-                  ? 'rgba(255,255,255,.08)'
-                  : 'rgba(255,255,255,.04)',
-                border: '1px solid rgba(255,255,255,.1)',
-                borderRadius: 0,
-                boxShadow: showVerMas
-                  ? '0 0 12px rgba(255,255,255,.04), inset 0 0 20px rgba(255,255,255,.02)'
-                  : '0 0 8px rgba(255,255,255,.02)',
-                color: showVerMas ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.55)',
-                fontSize: 'clamp(10px, 2.2vw, 12px)',
-                fontWeight: 600,
-                letterSpacing: '0.15em',
-                textTransform: 'uppercase' as const,
-              }}
-              onClick={() => setShowVerMas(!showVerMas)}
-            >
-              <span
-                className="transition-transform inline-block"
-                style={{ fontSize: 12, transform: showVerMas ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }}
-              >▸</span>
-              {showVerMas ? 'VER MENOS' : 'VER MÁS'}
-              <span
-                style={{
-                  width: 7, height: 7, borderRadius: '50%',
-                  background: showVerMas ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.3)',
-                  boxShadow: showVerMas ? '0 0 6px rgba(255,255,255,.3)' : 'none',
-                  animation: showVerMas ? 'none' : 'verMasPulse 2s ease-in-out infinite',
-                }}
-              />
-            </button>
-            )}
+              {/* COOKIES */}
+              <CookiesBlock showToast={showToast} onToggle={setCookiesExpanded} forceCollapse={isShortViewport} />
 
-            {/* ── VER MÁS ACCORDION DRAWER ──
-                B2: Dynamic max-height to avoid map center pin overlap
-                Map pin z-index=9999 is above this z-index=10
-            */}
-            {showVerMas && (
-              <div
-                className="overflow-y-auto border-t border-white/[.03]"
-                style={{
-                  maxHeight: dropdownMaxH,
-                  scrollbarWidth: 'none',
-                  // V9: 150ms expand animation
-                  animation: 'cookiesExpand 150ms ease-out',
-                }}
-              >
-                <div className="px-3 py-1">
+              {/* VER MÁS TOGGLE — 44px touch target */}
+              {!isShortViewport && (
+                <button
+                  className="w-full flex items-center justify-center gap-2 my-3 py-3 cursor-pointer transition-all active:scale-95 min-h-11"
+                  style={{
+                    background: showVerMas ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)',
+                    border: '1px solid #1f2937',
+                    borderRadius: 12,
+                    color: showVerMas ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.55)',
+                    fontSize: 11,
+                    fontWeight: 600,
+                    letterSpacing: '0.15em',
+                    textTransform: 'uppercase' as const,
+                  }}
+                  onClick={() => setShowVerMas(!showVerMas)}
+                >
+                  <span className="transition-transform inline-block" style={{ fontSize: 12, transform: showVerMas ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }}>▸</span>
+                  {showVerMas ? 'Ver Menos' : 'Ver Más'}
+                </button>
+              )}
 
-                  {/* ── Fase 2: FORENSIC TELEMETRY EXPORTER ──
-                      Gemini directive: "Copiar Telemetría Forense" button
-                      with navigator.vibrate + toast. Builds structured JSON
-                      payload for OSINT analysis and copies to clipboard. */}
-                  <div className="mb-2 pb-2 border-b border-white/[.04]">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <Microscope size={11} className="text-white/60" />
-                      <span className="font-bold uppercase tracking-wider text-white/60" style={{ fontSize: 9 }}>Forensic Export</span>
-                      {loiteringClusters.length > 0 && (
-                        <span className="px-1.5 py-0.5 rounded-full font-bold" style={{ background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,.85)', fontSize: 8, border: '1px solid rgba(255,255,255,0.15)' }}>
-                          {loiteringClusters.length} LOITER
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex gap-1.5">
-                      <button
-                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-[1.02] active:scale-[0.98] cursor-pointer min-h-11"
-                        style={{
-                          background: forensicCopied ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.06)',
-                          border: `1px solid ${forensicCopied ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.12)'}`,
-                          color: forensicCopied ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.85)',
-                          fontSize: 'clamp(9px, 2vw, 11px)',
-                          fontWeight: 600,
-                          letterSpacing: '0.05em',
-                        }}
-                        onClick={copyForensicTelemetry}
-                      >
-                        {forensicCopied ? <Check size={13} /> : <Clipboard size={13} />}
-                        <span className="uppercase">{forensicCopied ? 'COPIADO' : 'Copiar Telemetría'}</span>
-                      </button>
-                      <button
-                        className="flex items-center justify-center px-3 py-2.5 rounded-xl transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-[1.02] active:scale-[0.98] cursor-pointer min-h-11 min-w-11"
-                        style={{
-                          background: 'rgba(255,255,255,0.04)',
-                          border: '1px solid rgba(255,255,255,0.08)',
-                          color: 'rgba(255,255,255,0.5)',
-                          fontSize: 13,
-                        }}
-                        title="Descargar .json"
-                        onClick={downloadForensicTelemetry}
-                      >
-                        <Download size={13} />
-                      </button>
-                    </div>
-                    <div className="mt-1 text-white/25" style={{ fontSize: 8 }}>
-                      {ghostrailPts.length} pts · {loiteringClusters.length} hotspots · spoof {spoofResult.score}%
-                    </div>
-                  </div>
+              {/* VER MÁS ACCORDION DRAWER */}
+              {showVerMas && (
+                <div className="overflow-y-auto" style={{ maxHeight: '32vh', scrollbarWidth: 'none', animation: 'cookiesExpand 150ms ease-out' }}>
 
                   {/* GPS */}
-                  {!compressSections || openSections.gps ? (
                   <AccordionSection title="GPS" isOpen={openSections.gps} onToggle={() => toggleSection('gps')}>
-                    <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}><span className="text-white/25 uppercase">Lugar</span><span className="text-white/70 font-medium text-right truncate ml-1">{verMasGps?.place || '---'}</span></div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}><span className="text-white/25 uppercase">Señal</span><span className="text-white/70 font-medium">{verMasGps?.signal || '---'}</span></div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}><span className="text-white/25 uppercase">Lat</span><span className="text-white/70 font-mono" style={{ fontSize: 'clamp(7px, 1.6vw, 9px)' }}>{verMasGps?.lat_str || '---'}</span></div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}><span className="text-white/25 uppercase">Prec.</span><span className="text-white/70 font-medium">{verMasGps?.accuracy || '---'}</span></div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}><span className="text-white/25 uppercase">Lng</span><span className="text-white/70 font-mono" style={{ fontSize: 'clamp(7px, 1.6vw, 9px)' }}>{verMasGps?.lng_str || '---'}</span></div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Lugar</span><span className="text-gray-200 font-medium text-right truncate ml-1">{verMasGps?.place || '---'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Señal</span><span className="text-gray-200 font-medium">{verMasGps?.signal || '---'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Lat</span><span className="text-gray-300 font-mono" style={{ fontSize: 9 }}>{verMasGps?.lat_str || '---'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Prec.</span><span className="text-gray-200 font-medium">{verMasGps?.accuracy || '---'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Lng</span><span className="text-gray-300 font-mono" style={{ fontSize: 9 }}>{verMasGps?.lng_str || '---'}</span></div>
                     </div>
                   </AccordionSection>
-                  ) : null}
 
-                  {/* Sesión — B2: compress if needed */}
-                  {(!compressSections) && (
-                  <AccordionSection title="Sesión" isOpen={openSections.sesion} onToggle={() => toggleSection('sesion')}>
-                    <div className="grid grid-cols-3 gap-2">
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Duración</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSession?.duration || '0m'}</div></div>
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Screen ON</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSession?.screen_on || '0m'}</div></div>
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Screen OFF</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSession?.screen_off || '0m'}</div></div>
-                    </div>
-                  </AccordionSection>
-                  )}
-
-                  {/* Sistema — B2: compress if needed */}
-                  {(!compressSections) && (
+                  {/* Sistema */}
                   <AccordionSection title="Sistema" isOpen={openSections.sistema} onToggle={() => toggleSection('sistema')}>
                     <div className="grid grid-cols-3 gap-2">
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Red</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSystem?.network || 'OFFLINE'}</div></div>
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Batería</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSystem?.battery_raw || '---'}</div></div>
-                      <div className="text-center"><div className="text-white/20 uppercase" style={{ fontSize: 'clamp(6px, 1.2vw, 7px)' }}>Movimiento</div><div className="text-white/70 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{verMasSystem?.motion_raw || '---'}</div></div>
+                      <div className="text-center"><div className="text-gray-600 uppercase" style={{ fontSize: 8 }}>Red</div><div className="text-gray-200 font-medium" style={{ fontSize: 11 }}>{verMasSystem?.network || 'OFFLINE'}</div></div>
+                      <div className="text-center"><div className="text-gray-600 uppercase" style={{ fontSize: 8 }}>Batería</div><div className="text-gray-200 font-medium" style={{ fontSize: 11 }}>{verMasSystem?.battery_raw || '---'}</div></div>
+                      <div className="text-center"><div className="text-gray-600 uppercase" style={{ fontSize: 8 }}>Movim.</div><div className="text-gray-200 font-medium" style={{ fontSize: 11 }}>{verMasSystem?.motion_raw || '---'}</div></div>
                     </div>
                   </AccordionSection>
-                  )}
 
                   {/* Eventos */}
                   <AccordionSection title="Eventos" isOpen={openSections.eventos} onToggle={() => toggleSection('eventos')}>
-                    {verMasEvents && verMasEvents.length > 0 && (
-                      <div className="space-y-0.5 mb-1">
-                        {verMasEvents.slice().reverse().map((ev, i) => (
-                          <div key={`vm-${i}`} className="flex items-center gap-1.5 py-0.5">
-                            <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: ev.color }} />
-                            <span className="text-white/40" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>{ev.msg}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {events.length > 0 && (
+                    {events.length > 0 ? (
                       <div className="space-y-0.5 max-h-24 overflow-y-auto" style={{ scrollbarWidth: 'none' }}>
-                        {events.slice(-12).reverse().map((ev) => {
-                          const cmap: Record<string, string> = { ZONE_CHANGE:'rgba(255,255,255,.8)',MOTION_CHANGE:'rgba(255,255,255,.8)',ARRIVAL_PROGRESS:'rgba(255,255,255,.8)',SPOOF_DETECTED:'rgba(255,255,255,.95)',NETWORK_CHANGE:'rgba(255,255,255,.7)',ACTIVITY_CHANGE:'rgba(255,255,255,.7)',SCREEN_CHANGE:'rgba(255,255,255,.7)',NONI_DESPIER:'rgba(255,255,255,.8)',SALIDA_CASA:'rgba(255,255,255,.8)',TICK:'rgba(255,255,255,.4)',GPS_UPDATE:'rgba(255,255,255,.7)',BATTERY_UPDATE:'rgba(255,255,255,.7)' }
-                          const lmap: Record<string, string> = { ZONE_CHANGE:'Zone',MOTION_CHANGE:'Motion',ARRIVAL_PROGRESS:'Arrival',SPOOF_DETECTED:'Spoof',NETWORK_CHANGE:'Network',ACTIVITY_CHANGE:'Activity',SCREEN_CHANGE:'Screen',NONI_DESPIER:'State',SALIDA_CASA:'Left',TICK:'Tick',GPS_UPDATE:'GPS',BATTERY_UPDATE:'Bat' }
-                          const c = cmap[ev.type] || 'rgba(255,255,255,.4)'
-                          const l = lmap[ev.type] || ev.type.slice(0,6)
-                          const ts = ev.ts ? new Date(ev.ts).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : ''
-                          let d = ''
-                          const p = ev.payload
-                          if (ev.type==='ZONE_CHANGE') d=`${p.from_label||p.from_zone}→${p.to_label||p.to_zone}`
-                          else if (ev.type==='MOTION_CHANGE') d=`${p.from_class}→${p.to_class}`
-                          else if (ev.type==='ARRIVAL_PROGRESS') d=`${p.from_stage}→${p.to_stage} ${p.distance_m}m`
-                          else if (ev.type==='SPOOF_DETECTED') d=`${p.flag} ${p.risk_score}%`
-                          else if (ev.type==='NONI_DESPIER') d=`${p.from_state}→${p.to_state}`
-                          else if (ev.type==='SALIDA_CASA') d='Salió de casa'
-                          else if (ev.type==='ACTIVITY_CHANGE') d=`${p.from_score}%→${p.to_score}%`
+                        {events.slice(-10).reverse().map((ev) => {
+                          const ts = ev.ts ? new Date(ev.ts).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}) : ''
                           return (
                             <div key={ev.seq} className="flex items-center gap-1.5 py-0.5">
-                              <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{background:c}} />
-                              <span className="font-bold uppercase" style={{color:c, fontSize: 8}}>{l}</span>
-                              {d && <span className="text-white/35 truncate" style={{ fontSize: 9 }}>{d}</span>}
-                              <span className="text-white/12 font-mono ml-auto" style={{ fontSize: 6 }}>{ts}</span>
+                              <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-gray-400" />
+                              <span className="font-bold uppercase text-gray-300" style={{ fontSize: 8 }}>{ev.type.slice(0,10)}</span>
+                              <span className="text-gray-500 truncate" style={{ fontSize: 9 }}>{ts}</span>
                             </div>
                           )
                         })}
                       </div>
-                    )}
-                    {(!verMasEvents?.length) && events.length===0 && (
-                      <div className="text-white/12 py-0.5 text-center" style={{ fontSize: 8 }}>Sin eventos</div>
-                    )}
-                  </AccordionSection>
-
-                  {/* GhostRail 24h — V7: Single canonical source, time-ordered */}
-                  <AccordionSection title="GhostRail 24h" isOpen={openSections.ghostrail} onToggle={() => toggleSection('ghostrail')}>
-                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                      <span className="text-white/20 uppercase" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>Pts</span>
-                      <span className="text-white/60 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{ghostrailPts.length}</span>
-                      <span className="text-white/20 uppercase" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>Routed</span>
-                      <span className="text-white/60 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{routedTrailPts.length}</span>
-                      <span className="text-white/20 uppercase" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>Src</span>
-                      <span className="text-white/60 font-medium" style={{ fontSize: 'clamp(9px, 2vw, 11px)' }}>{ghostrailDiagnostics.current.source}</span>
-                    </div>
-                    {/* V7 Diagnostics */}
-                    {(() => {
-                      const d = ghostrailDiagnostics.current
-                      return d.total > 0 ? (
-                        <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.06)', color: 'rgba(255,255,255,.8)', border: '1px solid rgba(255,255,255,.1)', fontSize: 8 }}>
-                          V7: {d.total} pts [live:{d.live} cache:{d.cache}]
-                        </div>
-                      ) : (
-                        <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.04)', color: 'rgba(255,255,255,.5)', border: '1px solid rgba(255,255,255,.08)', fontSize: 8 }}>
-                          V7: No trail data
-                        </div>
-                      )
-                    })()}
-                    {(() => {
-                      const d = ghostrailDiagnostics.current
-                      const hasDiscards = d.discarded_age > 0 || d.discarded_no_ts > 0 || d.discarded_dup > 0
-                      return hasDiscards ? (
-                        <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.04)', color: 'rgba(255,255,255,.5)', border: '1px solid rgba(255,255,255,.08)', fontSize: 8 }}>
-                          age:{d.discarded_age} no_ts:{d.discarded_no_ts} dup:{d.discarded_dup}
-                        </div>
-                      ) : null
-                    })()}
-                    {rawGhostrailPts.length === 0 && ghostrailPts.length > 0 && (
-                      <div className="px-2 py-0.5 rounded-full inline-block mb-1" style={{ background: 'rgba(255,255,255,.04)', color: 'rgba(255,255,255,.5)', border: '1px solid rgba(255,255,255,.08)', fontSize: 8 }}>
-                        Rescue mode (cache)
-                      </div>
-                    )}
-                    {verMasGhostrail && verMasGhostrail.length > 0 ? (
-                      <div className="flex flex-wrap gap-1.5">
-                        {verMasGhostrail.map((z, i) => (
-                          <div key={i} className="flex items-center gap-1 px-2 py-0.5 rounded-full" style={{background:'rgba(255,255,255,.03)',border:'1px solid rgba(255,255,255,.04)'}}>
-                            <div className="w-2 h-2 rounded-full" style={{background:z.color}} />
-                            <span className="text-white/40" style={{ fontSize: 9 }}>{z.name}</span>
-                            <span className="text-white/70 font-medium" style={{ fontSize: 9 }}>{z.duration}</span>
-                          </div>
-                        ))}
-                      </div>
                     ) : (
-                      <div className="text-white/12 py-0.5" style={{ fontSize: 8 }}>Sin datos de zonas — 24h rebuild pendiente</div>
+                      <div className="text-gray-600 py-1 text-center" style={{ fontSize: 9 }}>Sin eventos</div>
                     )}
                   </AccordionSection>
 
-                  {/* Diagnóstico — B2: compress if needed (hide in compressed mode) */}
-                  {!compressSections && (
-                  <AccordionSection title="Diagnóstico" isOpen={openSections.diagnostico} onToggle={() => toggleSection('diagnostico')}>
-                    <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">WS</span>
-                        <span className="font-medium" style={{ color: wsConnected ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
-                          {wsConnected ? 'Conectado' : 'Desconectado'}
-                        </span>
+                  {/* GhostRail 24h */}
+                  <AccordionSection title="GhostRail 24h" isOpen={openSections.ghostrail} onToggle={() => toggleSection('ghostrail')}>
+                    <div className="flex items-center gap-3 mb-1.5 flex-wrap">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-gray-500 uppercase" style={{ fontSize: 9 }}>Pts</span>
+                        <span className="text-gray-200 font-medium" style={{ fontSize: 11 }}>{ghostrailPts.length}</span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Kernel</span>
-                        <span className="text-white/70 font-medium">{snapshot ? 'Activo' : 'Sin señal'}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-gray-500 uppercase" style={{ fontSize: 9 }}>Routed</span>
+                        <span className="text-gray-200 font-medium" style={{ fontSize: 11 }}>{routedTrailPts.length}</span>
                       </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Seq</span>
-                        <span className="text-white/70 font-mono" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>{kernelSeq}</span>
-                      </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Versión</span>
-                        <span className="text-white/70 font-mono" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>{snapshotVersion}</span>
-                      </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Trail</span>
-                        <span className="text-white/70 font-medium">{ghostrailPts.length} pts [{ghostrailDiagnostics.current.source}]</span>
-                      </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Zoom</span>
-                        <span className="text-white/70 font-mono" style={{ fontSize: 'clamp(7px, 1.4vw, 9px)' }}>{userZoom}x</span>
-                      </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Follow</span>
-                        <span className="font-medium" style={{ color: followMode ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
-                          {followMode ? 'ON' : 'OFF'}
-                        </span>
-                      </div>
-                      {/* MAGIA4: Drone Follow Mode diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Drone</span>
-                        <span className="font-medium" style={{ color: droneMode ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
-                          {droneMode ? 'ACTIVE' : 'idle'}
-                        </span>
-                      </div>
-                      {/* MAGIA1: Time scrubber diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Scrub</span>
-                        <span className="font-medium" style={{ color: scrubbing ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
-                          {scrubbing ? `idx ${timeScrubIndex}` : 'live'}
-                        </span>
-                      </div>
-                      {/* V5.7 NAV_02: Heading diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Heading</span>
-                        <span className="font-medium" style={{ color: headingState.heading != null ? 'rgba(255,255,255,.7)' : 'rgba(255,255,255,.4)' }}>
-                          {headingState.heading != null ? `${Math.round(headingState.heading)}°${headingState.latched ? ' (latch)' : ''}` : '—'}
-                        </span>
-                      </div>
-                      {/* V5.7 NAV_03: Snap-to-door diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Snap</span>
-                        <span className="font-medium" style={{ color: snapState.active ? 'rgba(255,255,255,.7)' : 'rgba(255,255,255,.4)' }}>
-                          {snapState.active ? `on ${(snapState.progress * 100).toFixed(0)}%` : 'off'}
-                        </span>
-                      </div>
-                      {/* V5.8 INFRA_REALTIME_SOCKETS: Socket.io diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Socket</span>
-                        <span className="font-medium" style={{ color: socketConnected ? 'rgba(10,132,255,.85)' : 'rgba(255,255,255,.4)' }}>
-                          {socketConnected ? 'WS Live' : 'HTTP poll'}
-                        </span>
-                      </div>
-                      {/* V5.8 SECURITY_FORTRESS: Encryption diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Crypto</span>
-                        <span className="font-medium" style={{ color: 'rgba(255,255,255,.7)' }}>
-                          AES-256
-                        </span>
-                      </div>
-                      {/* MAGIA2: Loitering clusters diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Loiter</span>
-                        <span className="font-medium" style={{ color: loiteringClusters.length > 0 ? 'rgba(255,255,255,.7)' : 'rgba(255,255,255,.4)' }}>
-                          {loiteringClusters.length} clusters
-                        </span>
-                      </div>
-                      {/* SYS3: Smart polling diagnostic */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Poll</span>
-                        <span className="font-medium" style={{ color: wsConnected ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
-                          {wsConnected ? 'KILLED (fresh)' : 'ARMED (3s)'}
-                        </span>
-                      </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Cookies</span>
-                        <span className="text-white/70 font-medium">{lastCookieRefresh || '---'}</span>
-                      </div>
-                      {/* F6: Screen state inference diagnostics */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Screen</span>
-                        <span className="font-medium" style={{ color: screen.isOn ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
-                          {screen.isOn ? 'ON' : 'OFF'} · {screen.confidence}%
-                        </span>
-                      </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Screen Src</span>
-                        <span className="text-white/40 font-mono" style={{ fontSize: 'clamp(6px, 1.2vw, 8px)' }}>{screen.source}</span>
-                      </div>
-                      {/* L1-L5: PlaceBadge diagnostics */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Place</span>
-                        <span className="font-medium" style={{ color: placeBadge.type ? placeBadge.color : 'rgba(255,255,255,.4)' }}>
-                          {placeBadge.type ? `${placeBadge.icon} ${placeBadge.value || placeBadge.type} · ${placeBadge.confidence}%` : '—'}
-                        </span>
-                      </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Place Src</span>
-                        <span className="text-white/40 font-mono" style={{ fontSize: 'clamp(6px, 1.2vw, 8px)' }}>{placeBadge.source}</span>
-                      </div>
-                      {/* M3+M4: Spoof diagnostics */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Spoof</span>
-                        <span className="font-medium" style={{ color: spoofResult.color }}>
-                          {spoofResult.icon} {spoofResult.score}% ({spoofResult.strongSignalCount} strong)
-                        </span>
-                      </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Spoof Sig</span>
-                        <span className="text-white/40 font-mono" style={{ fontSize: 'clamp(6px, 1.2vw, 8px)' }}>{spoofResult.signals.join(', ') || 'none'}</span>
-                      </div>
-                      {/* M1: Sleep inference diagnostics */}
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Sleep</span>
-                        <span className="font-medium" style={{ color: movement.inferredMode === 'SLEEP' ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
-                          {movement.inferredMode === 'SLEEP' ? 'DORMIDA' : 'DESPIERTA'}
-                        </span>
-                      </div>
-                      <div className="flex justify-between" style={{ fontSize: 'clamp(8px, 1.8vw, 10px)' }}>
-                        <span className="text-white/25 uppercase">Mode</span>
-                        <span className="font-medium" style={{ color: movement.isActive ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.4)' }}>
-                          {movement.displayMode} ({movement.inferredMode})
-                        </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-gray-500 uppercase" style={{ fontSize: 9 }}>Src</span>
+                        <span className="text-gray-200 font-medium" style={{ fontSize: 11 }}>{ghostrailDiagnostics.current.source}</span>
                       </div>
                     </div>
                   </AccordionSection>
-                  )}
-                </div>
 
-                {/* Kernel footer */}
-                <div className="px-3 pb-2 pt-1 border-t border-white/[.03] text-white/10 font-mono flex justify-between" style={{ fontSize: 8 }}>
-                  <span>EVENT_SOURCED_KERNEL</span>
-                  <span>{wsConnected ? 'WS_CONNECTED' : 'HTTP_FALLBACK'}</span>
+                  {/* Diagnóstico */}
+                  <AccordionSection title="Diagnóstico" isOpen={openSections.diagnostico} onToggle={() => toggleSection('diagnostico')}>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Kernel</span><span className="text-gray-200 font-medium">{snapshot ? 'Activo' : 'Sin señal'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Seq</span><span className="text-gray-300 font-mono" style={{ fontSize: 9 }}>{kernelSeq}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Socket</span><span className="text-gray-200 font-medium">{socketConnected ? 'WS Live' : 'HTTP poll'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Poll</span><span className="font-medium" style={{ color: isLiveMode ? (wsConnected ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.4)') : '#ff3b30' }}>{isLiveMode ? (wsConnected ? 'KILLED' : '3s') : 'PAUSED'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Zoom</span><span className="text-gray-300 font-mono" style={{ fontSize: 9 }}>{userZoom}x</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Heading</span><span className="text-gray-300 font-mono" style={{ fontSize: 9 }}>{effectiveHeading != null ? `${Math.round(effectiveHeading)}°${effectiveHeadingLatch ? ' L' : ''}` : '—'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Live</span><span className="font-medium" style={{ color: isLiveMode ? '#ff3b30' : 'rgba(255,255,255,0.4)' }}>{isLiveMode ? 'ON' : 'PAUSED'}</span></div>
+                      <div className="flex justify-between" style={{ fontSize: 10 }}><span className="text-gray-500 uppercase">Spoof</span><span className="font-medium" style={{ color: spoofResult.color }}>{spoofResult.icon} {spoofResult.score}%</span></div>
+                    </div>
+                  </AccordionSection>
                 </div>
-              </div>
-            )}
-      </TrackerSheet>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* ══ V8: TOAST removed — DynamicIsland (MC_8_03) now surfaces all alerts.
           The legacy `toast` state is mirrored into islandAlert by the useEffect
