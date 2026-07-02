@@ -3898,8 +3898,9 @@ export default function TrackerView() {
                 </div>
               </div>
 
-              {/* COOKIES */}
-              <CookiesBlock showToast={showToast} onToggle={setCookiesExpanded} forceCollapse={isShortViewport} />
+              {/* V11: CookiesBlock removed — V8 LEGACY_CODE_ERADICATION.
+                  Backend uses Google Account cookies stored in gist, not
+                  browser-supplied cookies. No cookie UI needed. */}
 
               {/* VER MÁS TOGGLE — 44px touch target */}
               {!isShortViewport && (
